@@ -1,0 +1,83 @@
+# ============================================================
+# Screening Question — Default Answers
+# ============================================================
+# These are fallback patterns for common Indeed screening questions.
+# The bot learns YOUR answers over time and saves them to the database.
+# These are only used as initial defaults on the very first run.
+#
+# Format:
+#   - pattern: "regex or keyword pattern to match question text"
+#     answer: "your default answer"
+#     type: "text" | "select" | "radio" | "yesno"
+# ============================================================
+
+defaults:
+  # --- Work Authorization ---
+  - pattern: "authorized to work|legally authorized|work authorization|eligible to work"
+    answer: "Yes"
+    type: "yesno"
+
+  - pattern: "require sponsorship|visa sponsorship|need sponsorship"
+    answer: "No"
+    type: "yesno"
+
+  # --- Experience ---
+  - pattern: "years of experience|years experience|how many years"
+    answer: "3+ years"
+    type: "text"
+
+  # --- Availability ---
+  - pattern: "start date|when can you start|available to start|earliest start"
+    answer: "Immediately"
+    type: "text"
+
+  - pattern: "willing to relocate|open to relocation|relocate"
+    answer: "Yes"
+    type: "yesno"
+
+  # --- Work Preferences ---
+  - pattern: "willing to commute|commute to|able to commute"
+    answer: "Yes"
+    type: "yesno"
+
+  - pattern: "remote work|work from home|work remotely|hybrid"
+    answer: "Yes"
+    type: "yesno"
+
+  - pattern: "salary expectation|desired salary|expected salary|compensation"
+    answer: "Negotiable"
+    type: "text"
+
+  - pattern: "travel|willing to travel|travel required"
+    answer: "Yes"
+    type: "yesno"
+
+  # --- Education ---
+  - pattern: "highest level of education|degree|education level"
+    answer: "Bachelor's Degree"
+    type: "text"
+
+  # --- Other ---
+  - pattern: "cover letter|additional information|anything else"
+    answer: ""
+    type: "text"
+
+  - pattern: "referred by|how did you hear|source"
+    answer: "Indeed"
+    type: "text"
+
+  - pattern: "criminal|felony|conviction|background check"
+    answer: "No"
+    type: "yesno"
+
+  - pattern: "drug test|drug screening"
+    answer: "Yes"
+    type: "yesno"
+
+  - pattern: "age|over 18|at least 18"
+    answer: "Yes"
+    type: "yesno"
+
+  - pattern: "driver.?s? license|valid license|driving license"
+    answer: "Yes"
+    type: "yesno"

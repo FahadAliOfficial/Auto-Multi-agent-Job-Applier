@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Jobs{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Jobs</h2>
+    <p>{{ total }} jobs found &mdash; filter by status, search, or browse pages</p>
+</div>
+
+<!-- Filter bar -->
+<form class="filter-bar" method="GET" action="/jobs">
+    <select name="status" onchange="this.form.submit()">
+        <option value="">All Statuses</option>
+        <option value="found"   {% if status == 'found' %}selected{% endif %}>Found</option>
+        <option value="applied" {% if status == 'applied' %}selected{% endif %}>Applied</option>
+        <option value="skipped" {% if status == 'skipped' %}selected{% endif %}>Skipped</option>
+        <option value="failed"  {% if status == 'failed' %}selected{% endif %}>Failed</option>
+    </select>
+
+    <input type="search"
+           name="search"
+           placeholder="Search title, company, location…"
+           value="{{ search }}"
+           style="min-width: 260px;">
+
+    <button type="submit">Filter</button>
+
+    {% if status or search %}
+    <a href="/jobs" style="font-size:0.82rem; color:var(--text-muted);">✕ Clear</a>
+    {% endif %}
+</form>
+
+<!-- Jobs table -->
+<div class="table-wrapper">
+    <table>
+        <thead>
+            <tr>
+                <th>Title</th>
+                <th>Company</th>
+                <th>Location</th>
+                <th>Salary</th>
+                <th>Status</th>
+                <th>Date</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for job in jobs %}
+            <tr>
+                <td><strong>{{ job.title }}</strong></td>
+                <td>{{ job.company }}</td>
+                <td style="color: var(--text-muted);">{{ job.location }}</td>
+                <td>{{ job.salary or '—' }}</td>
+                <td>{{ job.status | status_badge | safe }}</td>
+                <td style="color: var(--text-muted); font-size: 0.8rem; white-space: nowrap;">
+                    {{ job.applied_at or job.found_at or '—' }}
+                </td>
+                <td>
+                    <a href="/jobs/{{ job.id }}" class="btn btn-sm" style="background:var(--bg-secondary); color:var(--accent); border:1px solid var(--border);">
+                        View
+                    </a>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="7" style="text-align:center; color: var(--text-muted); padding: 3rem;">
+                    No jobs match the current filters.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Pagination -->
+{% if total_pages > 1 %}
+<div class="pagination">
+    {% if page > 1 %}
+    <a href="/jobs?page={{ page - 1 }}&status={{ status }}&search={{ search }}">&laquo; Prev</a>
+    {% endif %}
+
+    {% for p in range(1, total_pages + 1) %}
+        {% if p == page %}
+            <span class="current">{{ p }}</span>
+        {% elif p <= 3 or p > total_pages - 3 or (p >= page - 2 and p <= page + 2) %}
+            <a href="/jobs?page={{ p }}&status={{ status }}&search={{ search }}">{{ p }}</a>
+        {% elif p == 4 or p == total_pages - 3 %}
+            <span style="color:var(--text-muted);">…</span>
+        {% endif %}
+    {% endfor %}
+
+    {% if page < total_pages %}
+    <a href="/jobs?page={{ page + 1 }}&status={{ status }}&search={{ search }}">Next &raquo;</a>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

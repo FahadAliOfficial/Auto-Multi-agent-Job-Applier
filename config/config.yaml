@@ -1,0 +1,126 @@
+# ============================================================
+# Indeed Easy Apply Bot — Configuration
+# ============================================================
+# Edit this file with your personal details and search criteria.
+# All fields are used to fill application forms automatically.
+# ============================================================
+
+# --- Personal Information ---
+personal:
+  first_name: "Fahad"
+  last_name: "Ali"
+  email: "fahadaliofficials@gmail.com"
+  phone: "+92-326-1310007"
+  address: "Faisalabad, Pakistan"
+  city: "Faisalabad"
+  state: "Punjab"
+  zip_code: "38000"
+  country: "Pakistan"
+  linkedin: "https://www.linkedin.com/in/fahaddali/"
+  website: "https://www.fahadali.me/"
+
+# --- Resume Configuration ---
+# Place your resume PDFs in config/resumes/
+# The bot picks the best match based on job title keywords.
+resume:
+  default_path: "config/resumes/Fahad Ali - Resume.pdf"
+  profiles:
+    - name: "general"
+      path: "config/resumes/Fahad Ali - Resume.pdf"
+      keywords: []  # Matches any job when no other profile fits
+    - name: "technical"
+      path: "config/resumes/technical.pdf"
+      keywords: ["software", "developer", "engineer", "programming", "devops", "backend", "frontend", "fullstack", "data"]
+    # - name: "leadership"
+    #   path: "config/resumes/leadership.pdf"
+    #   keywords: ["manager", "lead", "director", "head of", "vp", "principal", "senior"]
+
+# --- Job Search Criteria ---
+search:
+  # List of job title queries to search for (bot runs each query)
+  queries:
+    - "Software Engineer"
+    - "Python Developer"
+    - "Web Scrapper"
+    - "Full Stack Developer"
+    - "Backend Developer"
+    - "Frontend Developer"
+    - "Data Engineer"
+    - "Next.js Developer"
+    - "React Developer"
+    - "Generative AI Engineer"
+    - "Backend/AI Engineer"
+    - "Agentic AI Developer"
+    - "AI Application Engineer"
+    - "AI Engineer, Agentic AI"
+    - "Senior Developer (Python)"
+    - "AI Engineer/Solution Architect"
+    - "AI Engineer/Developer"
+    - "AI Engineer/Architect"
+    - "Integration Developer"
+    
+  # Location (city, state, or "remote")
+  location: "remote"
+
+  # Distance radius in miles (5, 10, 15, 25, 50, 100)
+  radius: 25
+
+  # Job type filter: "fulltime", "parttime", "contract", "temporary", "internship", or "" for all
+  job_type: ""
+
+  # Experience level: "entry_level", "mid_level", "senior_level", or "" for all
+  experience_level: ""
+
+  # Salary minimum (0 to disable filter)
+  salary_min: 0
+
+  # Date posted: "1" (24h), "3" (3 days), "7" (7 days), "14" (14 days), or "" for any time
+  date_posted: "7"
+
+  # Only apply to "Easy Apply" jobs (recommended: true)
+  easy_apply_only: true
+
+  # Maximum number of pages to scan per search query
+  max_pages: 5
+
+# --- Bot Behavior ---
+bot:
+  # Mode: "semi" (review each job before applying) or "auto" (apply automatically)
+  mode: "semi"
+
+  # Maximum applications per session (0 = unlimited)
+  max_applications: 25
+
+  # Delay ranges in seconds (randomized within range)
+  delays:
+    between_jobs_min: 30
+    between_jobs_max: 90
+    between_pages_min: 3
+    between_pages_max: 8
+    between_actions_min: 1
+    between_actions_max: 3
+    typing_min_ms: 50
+    typing_max_ms: 150
+
+  # Take a screenshot after each application
+  screenshot_on_apply: true
+
+  # Take a screenshot on errors
+  screenshot_on_error: true
+
+  # Browser settings
+  browser:
+    headless: false  # Set to true for background operation (higher detection risk)
+    slow_mo: 50      # Milliseconds to slow down each Playwright action
+    viewport_width: 1366
+    viewport_height: 768
+
+# --- Keywords to Skip ---
+# Jobs containing these keywords in title/description will be skipped
+skip_keywords:
+  - "clearance required"
+  - "security clearance"
+
+# --- Companies to Skip ---
+# Jobs from these companies will be skipped
+skip_companies: []

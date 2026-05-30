@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Questions{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Screening Questions</h2>
+    <p>Review and edit saved answers for common screening questions</p>
+</div>
+
+<!-- Search bar -->
+<form class="filter-bar" method="GET" action="/questions">
+    <input type="search"
+           name="search"
+           placeholder="Search questions…"
+           value="{{ search }}"
+           style="min-width: 320px;">
+    <button type="submit">Search</button>
+    {% if search %}
+    <a href="/questions" style="font-size:0.82rem; color:var(--text-muted);">✕ Clear</a>
+    {% endif %}
+</form>
+
+<!-- Questions table -->
+<div class="table-wrapper">
+    <table>
+        <thead>
+            <tr>
+                <th style="width:35%;">Question</th>
+                <th style="width:30%;">Saved Answer</th>
+                <th>Times Seen</th>
+                <th>Confidence</th>
+                <th>Last Used</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for q in questions %}
+            <tr id="question-row-{{ q.id }}">
+                <td>{{ q.question }}</td>
+                <td>
+                    <!-- Display mode -->
+                    <div id="answer-display-{{ q.id }}">
+                        <span style="{% if not q.answer %}color:var(--text-muted); font-style:italic;{% endif %}">
+                            {{ q.answer or 'No answer saved' }}
+                        </span>
+                        <button class="btn btn-sm"
+                                style="margin-left:0.5rem; background:transparent; color:var(--accent); border:1px solid var(--border);"
+                                onclick="document.getElementById('answer-edit-{{ q.id }}').style.display='flex'; this.parentElement.style.display='none';">
+                            ✎ Edit
+                        </button>
+                    </div>
+
+                    <!-- Edit mode (hidden by default) -->
+                    <form id="answer-edit-{{ q.id }}"
+                          class="inline-edit"
+                          style="display:none;"
+                          hx-post="/questions/{{ q.id }}/answer"
+                          hx-target="#question-row-{{ q.id }}"
+                          hx-swap="outerHTML">
+                        <input type="text"
+                               name="answer"
+                               value="{{ q.answer or '' }}"
+                               placeholder="Type your answer…"
+                               style="flex:1;">
+                        <button type="submit" class="btn btn-sm">Save</button>
+                        <button type="button" class="btn btn-sm"
+                                style="background:transparent; color:var(--text-muted); border:1px solid var(--border);"
+                                onclick="this.parentElement.style.display='none'; document.getElementById('answer-display-{{ q.id }}').style.display='block';">
+                            Cancel
+                        </button>
+                    </form>
+                </td>
+                <td style="text-align:center;">
+                    <span style="background:var(--bg-secondary); padding:2px 10px; border-radius:8px; font-size:0.82rem;">
+                        {{ q.times_used }}
+                    </span>
+                </td>
+                <td>
+                    {% set conf = q.confidence or 0 %}
+                    {% if conf >= 0.8 %}
+                        {% set conf_color = 'var(--green)' %}
+                    {% elif conf >= 0.5 %}
+                        {% set conf_color = 'var(--yellow)' %}
+                    {% else %}
+                        {% set conf_color = 'var(--red)' %}
+                    {% endif %}
+                    <div style="display:flex; align-items:center; gap:0.5rem;">
+                        <div style="flex:1; height:6px; background:var(--bg-secondary); border-radius:3px; overflow:hidden; max-width:80px;">
+                            <div style="width:{{ (conf * 100)|int }}%; height:100%; background:{{ conf_color }}; border-radius:3px;"></div>
+                        </div>
+                        <span style="font-size:0.78rem; color:var(--text-muted);">{{ (conf * 100)|int }}%</span>
+                    </div>
+                </td>
+                <td style="color:var(--text-muted); font-size:0.8rem; white-space:nowrap;">
+                    {{ q.answered_at or '—' }}
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="5" style="text-align:center; color: var(--text-muted); padding: 3rem;">
+                    No screening questions recorded yet.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

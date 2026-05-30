@@ -1,0 +1,59 @@
+<!-- Partial: single question table row, returned by HTMX POST /questions/<id>/answer -->
+<tr id="question-row-{{ q.id }}">
+    <td>{{ q.question }}</td>
+    <td>
+        <div id="answer-display-{{ q.id }}">
+            <span style="{% if not q.answer %}color:var(--text-muted); font-style:italic;{% endif %}">
+                {{ q.answer or 'No answer saved' }}
+            </span>
+            <button class="btn btn-sm"
+                    style="margin-left:0.5rem; background:transparent; color:var(--accent); border:1px solid var(--border);"
+                    onclick="document.getElementById('answer-edit-{{ q.id }}').style.display='flex'; this.parentElement.style.display='none';">
+                ✎ Edit
+            </button>
+        </div>
+
+        <form id="answer-edit-{{ q.id }}"
+              class="inline-edit"
+              style="display:none;"
+              hx-post="/questions/{{ q.id }}/answer"
+              hx-target="#question-row-{{ q.id }}"
+              hx-swap="outerHTML">
+            <input type="text"
+                   name="answer"
+                   value="{{ q.answer or '' }}"
+                   placeholder="Type your answer…"
+                   style="flex:1;">
+            <button type="submit" class="btn btn-sm">Save</button>
+            <button type="button" class="btn btn-sm"
+                    style="background:transparent; color:var(--text-muted); border:1px solid var(--border);"
+                    onclick="this.parentElement.style.display='none'; document.getElementById('answer-display-{{ q.id }}').style.display='block';">
+                Cancel
+            </button>
+        </form>
+    </td>
+    <td style="text-align:center;">
+        <span style="background:var(--bg-secondary); padding:2px 10px; border-radius:8px; font-size:0.82rem;">
+            {{ q.times_used }}
+        </span>
+    </td>
+    <td>
+        {% set conf = q.confidence or 0 %}
+        {% if conf >= 0.8 %}
+            {% set conf_color = 'var(--green)' %}
+        {% elif conf >= 0.5 %}
+            {% set conf_color = 'var(--yellow)' %}
+        {% else %}
+            {% set conf_color = 'var(--red)' %}
+        {% endif %}
+        <div style="display:flex; align-items:center; gap:0.5rem;">
+            <div style="flex:1; height:6px; background:var(--bg-secondary); border-radius:3px; overflow:hidden; max-width:80px;">
+                <div style="width:{{ (conf * 100)|int }}%; height:100%; background:{{ conf_color }}; border-radius:3px;"></div>
+            </div>
+            <span style="font-size:0.78rem; color:var(--text-muted);">{{ (conf * 100)|int }}%</span>
+        </div>
+    </td>
+    <td style="color:var(--text-muted); font-size:0.8rem; white-space:nowrap;">
+        {{ q.answered_at or '—' }}
+    </td>
+</tr>

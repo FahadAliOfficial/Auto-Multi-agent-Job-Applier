@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Dashboard</h2>
+    <p>Real-time overview of your job application activity</p>
+</div>
+
+<!-- Stats cards — auto-refresh via HTMX every 30 s -->
+<div id="stats-container"
+     hx-get="/api/stats"
+     hx-trigger="every 30s"
+     hx-swap="innerHTML"
+     hx-target="#stats-cards">
+
+    <div class="stats-row" id="stats-cards">
+        <div class="card stat-card">
+            <div class="stat-value" style="color: var(--accent);">{{ stats.total_found }}</div>
+            <div class="stat-label">Jobs Found</div>
+        </div>
+        <div class="card stat-card">
+            <div class="stat-value" style="color: var(--green);">{{ stats.applied }}</div>
+            <div class="stat-label">Applied</div>
+        </div>
+        <div class="card stat-card">
+            <div class="stat-value" style="color: var(--yellow);">{{ stats.skipped }}</div>
+            <div class="stat-label">Skipped</div>
+        </div>
+        <div class="card stat-card">
+            <div class="stat-value" style="color: var(--red);">{{ stats.failed }}</div>
+            <div class="stat-label">Failed</div>
+        </div>
+        <div class="card stat-card">
+            <div class="stat-value" style="color: var(--accent);">{{ stats.success_rate }}%</div>
+            <div class="stat-label">Success Rate</div>
+        </div>
+    </div>
+</div>
+
+<!-- HTMX JSON → HTML swap handler (replaces stat cards from /api/stats JSON) -->
+<script>
+document.body.addEventListener('htmx:beforeSwap', function(evt) {
+    if (evt.detail.target.id === 'stats-cards') {
+        try {
+            const data = JSON.parse(evt.detail.xhr.responseText);
+            evt.detail.serverResponse = `
+                <div class="card stat-card">
+                    <div class="stat-value" style="color: var(--accent);">${data.total_found}</div>
+                    <div class="stat-label">Jobs Found</div>
+                </div>
+                <div class="card stat-card">
+                    <div class="stat-value" style="color: var(--green);">${data.applied}</div>
+                    <div class="stat-label">Applied</div>
+                </div>
+                <div class="card stat-card">
+                    <div class="stat-value" style="color: var(--yellow);">${data.skipped}</div>
+                    <div class="stat-label">Skipped</div>
+                </div>
+                <div class="card stat-card">
+                    <div class="stat-value" style="color: var(--red);">${data.failed}</div>
+                    <div class="stat-label">Failed</div>
+                </div>
+                <div class="card stat-card">
+                    <div class="stat-value" style="color: var(--accent);">${data.success_rate}%</div>
+                    <div class="stat-label">Success Rate</div>
+                </div>`;
+        } catch(e) { /* not JSON — let HTMX handle normally */ }
+    }
+});
+</script>
+
+<!-- Recent applications -->
+<div class="page-header" style="margin-top: 1rem;">
+    <h2 style="font-size: 1.15rem;">Recent Applications</h2>
+</div>
+
+<div class="table-wrapper">
+    <table>
+        <thead>
+            <tr>
+                <th>Title</th>
+                <th>Company</th>
+                <th>Location</th>
+                <th>Status</th>
+                <th>Date</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for job in recent %}
+            <tr style="cursor:pointer;" onclick="window.location='/jobs/{{ job.id }}'">
+                <td><strong>{{ job.title }}</strong></td>
+                <td>{{ job.company }}</td>
+                <td style="color: var(--text-muted);">{{ job.location }}</td>
+                <td>{{ job.status | status_badge | safe }}</td>
+                <td style="color: var(--text-muted); font-size: 0.8rem;">
+                    {{ job.applied_at or job.found_at or '—' }}
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="5" style="text-align:center; color: var(--text-muted); padding: 3rem;">
+                    No jobs recorded yet. Start the bot to see data here.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

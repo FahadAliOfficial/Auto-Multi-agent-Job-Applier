@@ -1,0 +1,22 @@
+[project]
+name = "indeed-easy-apply-bot"
+version = "1.0.0"
+description = "Personal Indeed Easy Apply automation assistant"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.45.0",
+    "aiosqlite>=0.20.0",
+    "pyyaml>=6.0",
+    "rich>=13.7.0",
+    "flask>=3.0.0",
+]
+
+[project.scripts]
+indeed-bot = "src.main:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["src*"]

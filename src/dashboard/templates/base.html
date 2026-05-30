@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Dashboard{% endblock %} — Indeed Easy Apply Bot</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/htmx.org@2.0.4" integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+" crossorigin="anonymous"></script>
+    <style>
+        /* ── Reset & Base ─────────────────────────────────────────── */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg-primary:   #0f0f23;
+            --bg-secondary: #1a1a2e;
+            --bg-card:      rgba(30, 30, 60, 0.55);
+            --bg-sidebar:   #12122a;
+            --text-primary: #e0e0e0;
+            --text-muted:   #8888aa;
+            --accent:       #4fc3f7;
+            --accent-dim:   #2196c4;
+            --green:        #4caf50;
+            --yellow:       #ffb74d;
+            --red:          #ef5350;
+            --border:       rgba(79, 195, 247, 0.12);
+            --glass-bg:     rgba(30, 30, 60, 0.45);
+            --glass-border: rgba(79, 195, 247, 0.18);
+            --radius:       14px;
+            --sidebar-w:    240px;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
+        a { color: var(--accent); text-decoration: none; transition: color .2s; }
+        a:hover { color: #81d4fa; }
+
+        /* ── Layout ───────────────────────────────────────────────── */
+        .layout {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* ── Sidebar ──────────────────────────────────────────────── */
+        .sidebar {
+            width: var(--sidebar-w);
+            background: var(--bg-sidebar);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            top: 0; bottom: 0; left: 0;
+            z-index: 100;
+            padding: 1.5rem 0;
+        }
+
+        .sidebar-brand {
+            padding: 0 1.25rem 1.5rem;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 1rem;
+        }
+        .sidebar-brand h1 {
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: var(--accent);
+            letter-spacing: -0.02em;
+        }
+        .sidebar-brand small {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            display: block;
+            margin-top: 2px;
+        }
+
+        .sidebar-nav { flex: 1; padding: 0 0.75rem; }
+        .sidebar-nav a {
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+            padding: 0.65rem 0.85rem;
+            border-radius: 10px;
+            font-size: 0.88rem;
+            font-weight: 500;
+            color: var(--text-muted);
+            transition: all 0.2s;
+            margin-bottom: 2px;
+        }
+        .sidebar-nav a:hover,
+        .sidebar-nav a.active {
+            background: rgba(79, 195, 247, 0.08);
+            color: var(--accent);
+        }
+        .sidebar-nav a .icon { font-size: 1.15rem; width: 1.5rem; text-align: center; }
+
+        .sidebar-footer {
+            padding: 1rem 1.25rem;
+            border-top: 1px solid var(--border);
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            text-align: center;
+        }
+
+        /* ── Main content ─────────────────────────────────────────── */
+        .main {
+            margin-left: var(--sidebar-w);
+            flex: 1;
+            padding: 2rem 2.5rem;
+            min-width: 0;
+        }
+
+        .page-header {
+            margin-bottom: 2rem;
+        }
+        .page-header h2 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+        }
+        .page-header p {
+            color: var(--text-muted);
+            font-size: 0.88rem;
+            margin-top: 0.25rem;
+        }
+
+        /* ── Glassmorphism cards ───────────────────────────────────── */
+        .card {
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: var(--radius);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            padding: 1.5rem;
+            transition: transform 0.2s, box-shadow 0.3s;
+        }
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 32px rgba(79, 195, 247, 0.08);
+        }
+
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1.25rem;
+            margin-bottom: 2rem;
+        }
+        .stat-card { text-align: center; }
+        .stat-card .stat-value {
+            font-size: 2.2rem;
+            font-weight: 700;
+            line-height: 1.1;
+        }
+        .stat-card .stat-label {
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-top: 0.4rem;
+        }
+
+        /* ── Tables ───────────────────────────────────────────────── */
+        .table-wrapper {
+            overflow-x: auto;
+            border-radius: var(--radius);
+            border: 1px solid var(--glass-border);
+            background: var(--glass-bg);
+            backdrop-filter: blur(16px);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+        thead th {
+            text-align: left;
+            padding: 0.85rem 1rem;
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            background: var(--bg-secondary);
+        }
+        tbody td {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+            vertical-align: middle;
+        }
+        tbody tr {
+            transition: background 0.15s;
+        }
+        tbody tr:hover {
+            background: rgba(79, 195, 247, 0.04);
+        }
+
+        /* ── Forms & Inputs ───────────────────────────────────────── */
+        .filter-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+            align-items: center;
+        }
+
+        input[type="text"], input[type="search"], select {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 0.55rem 0.85rem;
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 0.85rem;
+            transition: border-color 0.2s;
+        }
+        input:focus, select:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        button, .btn {
+            background: var(--accent);
+            color: #000;
+            border: none;
+            padding: 0.55rem 1.2rem;
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 0.82rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.15s;
+        }
+        button:hover, .btn:hover {
+            background: #81d4fa;
+            transform: translateY(-1px);
+        }
+
+        .btn-sm {
+            padding: 0.35rem 0.8rem;
+            font-size: 0.75rem;
+        }
+
+        /* ── Pagination ───────────────────────────────────────────── */
+        .pagination {
+            display: flex;
+            gap: 0.4rem;
+            margin-top: 1.5rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .pagination a, .pagination span {
+            padding: 0.4rem 0.8rem;
+            border-radius: 8px;
+            font-size: 0.82rem;
+            font-weight: 500;
+        }
+        .pagination a {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            transition: all 0.2s;
+        }
+        .pagination a:hover { border-color: var(--accent); color: var(--accent); }
+        .pagination .current {
+            background: var(--accent);
+            color: #000;
+            font-weight: 700;
+        }
+
+        /* ── Badges ───────────────────────────────────────────────── */
+        .badge {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        /* ── Inline edit ──────────────────────────────────────────── */
+        .inline-edit {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+        .inline-edit input {
+            flex: 1;
+            min-width: 180px;
+        }
+
+        /* ── Responsive ───────────────────────────────────────────── */
+        @media (max-width: 768px) {
+            .sidebar { display: none; }
+            .main { margin-left: 0; padding: 1rem; }
+            .stats-row { grid-template-columns: repeat(2, 1fr); }
+        }
+    </style>
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    <div class="layout">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <h1>Indeed Bot</h1>
+                <small>Easy Apply Dashboard</small>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="/" class="{% if request.path == '/' %}active{% endif %}">
+                    <span class="icon">📊</span> Dashboard
+                </a>
+                <a href="/jobs" class="{% if '/jobs' in request.path and request.path != '/' %}active{% endif %}">
+                    <span class="icon">💼</span> Jobs
+                </a>
+                <a href="/sessions" class="{% if request.path == '/sessions' %}active{% endif %}">
+                    <span class="icon">🔍</span> Sessions
+                </a>
+                <a href="/questions" class="{% if request.path == '/questions' %}active{% endif %}">
+                    <span class="icon">❓</span> Questions
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                Indeed Easy Apply Bot &copy; 2026
+            </div>
+        </aside>
+
+        <!-- Main content -->
+        <main class="main">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+</body>
+</html>

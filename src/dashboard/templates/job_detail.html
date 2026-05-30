@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} — Job Detail{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <p style="margin-bottom: 0.5rem;">
+        <a href="/jobs" style="font-size:0.85rem;">&larr; Back to Jobs</a>
+    </p>
+    <h2>{{ job.title }}</h2>
+    <p>{{ job.company }} &mdash; {{ job.location }}</p>
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr 300px; gap: 1.5rem; align-items: start;">
+
+    <!-- Main info card -->
+    <div class="card">
+        <h3 style="font-size: 1rem; margin-bottom: 1rem; color: var(--accent);">Job Details</h3>
+
+        <table style="font-size: 0.88rem;">
+            <tbody>
+                <tr>
+                    <td style="color:var(--text-muted); padding: 0.5rem 1.5rem 0.5rem 0; font-weight:600;">Title</td>
+                    <td>{{ job.title }}</td>
+                </tr>
+                <tr>
+                    <td style="color:var(--text-muted); padding: 0.5rem 1.5rem 0.5rem 0; font-weight:600;">Company</td>
+                    <td>{{ job.company }}</td>
+                </tr>
+                <tr>
+                    <td style="color:var(--text-muted); padding: 0.5rem 1.5rem 0.5rem 0; font-weight:600;">Location</td>
+                    <td>{{ job.location }}</td>
+                </tr>
+                <tr>
+                    <td style="color:var(--text-muted); padding: 0.5rem 1.5rem 0.5rem 0; font-weight:600;">Salary</td>
+                    <td>{{ job.salary or '—' }}</td>
+                </tr>
+                <tr>
+                    <td style="color:var(--text-muted); padding: 0.5rem 1.5rem 0.5rem 0; font-weight:600;">Status</td>
+                    <td>{{ job.status | status_badge | safe }}</td>
+                </tr>
+                <tr>
+                    <td style="color:var(--text-muted); padding: 0.5rem 1.5rem 0.5rem 0; font-weight:600;">Found At</td>
+                    <td>{{ job.found_at or '—' }}</td>
+                </tr>
+                <tr>
+                    <td style="color:var(--text-muted); padding: 0.5rem 1.5rem 0.5rem 0; font-weight:600;">Applied At</td>
+                    <td>{{ job.applied_at or '—' }}</td>
+                </tr>
+                {% if job.url %}
+                <tr>
+                    <td style="color:var(--text-muted); padding: 0.5rem 1.5rem 0.5rem 0; font-weight:600;">URL</td>
+                    <td><a href="{{ job.url }}" target="_blank" rel="noopener">Open on Indeed ↗</a></td>
+                </tr>
+                {% endif %}
+
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Side panel -->
+    <div>
+        {% if job.notes %}
+        <div class="card" style="margin-bottom: 1rem; border-color: var(--yellow);">
+            <h4 style="font-size:0.85rem; color:var(--yellow); margin-bottom:0.5rem;">Notes / Details</h4>
+            <p style="font-size:0.85rem;">{{ job.notes }}</p>
+        </div>
+        {% endif %}
+
+        <div class="card">
+            <h4 style="font-size:0.85rem; color:var(--text-muted); margin-bottom:0.5rem;">Indeed Job ID</h4>
+            <p style="font-size:0.82rem; font-family:monospace; word-break:break-all;">
+                {{ job.indeed_job_id or '—' }}
+            </p>
+        </div>
+    </div>
+</div>
+
+{% if job.description %}
+<div class="card" style="margin-top: 1.5rem;">
+    <h3 style="font-size: 1rem; margin-bottom: 1rem; color: var(--accent);">Description</h3>
+    <div style="font-size:0.88rem; line-height:1.7; white-space:pre-wrap; color:var(--text-muted);">{{ job.description }}</div>
+</div>
+{% endif %}
+{% endblock %}
