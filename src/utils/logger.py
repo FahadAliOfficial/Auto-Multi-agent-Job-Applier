@@ -8,11 +8,15 @@ functions for common bot events (job found, applied, skipped, error).
 from __future__ import annotations
 
 import logging
+import re
+from contextvars import ContextVar
 from pathlib import Path
 
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.theme import Theme
+
+from src.control_center import REGISTRY
 
 # ── Rich console singleton ────────────────────────────────────────────
 _THEME = Theme(
@@ -29,6 +33,64 @@ _THEME = Theme(
 )
 
 console = Console(theme=_THEME)
+
+# ── Agent context for control center logging ─────────────────────────
+_CURRENT_AGENT_ID: ContextVar[str | None] = ContextVar("CURRENT_AGENT_ID", default=None)
+
+
+def set_current_agent(agent_id: str | None) -> object:
+    """Set the current agent id for log routing; returns a reset token."""
+    return _CURRENT_AGENT_ID.set(agent_id or None)
+
+
+def reset_current_agent(token: object) -> None:
+    """Reset the current agent id using the provided token."""
+    _CURRENT_AGENT_ID.reset(token)
+
+
+def _strip_rich_markup(message: str) -> str:
+    return re.sub(r"\[[^\]]+\]", "", message).strip()
+
+
+def _render_rich_to_text(*args, **kwargs) -> str:
+    temp_console = Console(record=True, force_terminal=False, width=120)
+    temp_console.print(*args, **kwargs)
+    return temp_console.export_text(clear=True)
+
+
+def cc_print(*args, **kwargs) -> None:
+    """Print to console and mirror the output to the control center if set."""
+    console.print(*args, **kwargs)
+    agent_id = _CURRENT_AGENT_ID.get()
+    if not agent_id:
+        return
+
+    try:
+        text = _render_rich_to_text(*args, **kwargs).strip("\n")
+    except Exception:
+        return
+
+    for line in text.splitlines():
+        line = _strip_rich_markup(line)
+        if line:
+            REGISTRY.append_log(agent_id, line)
+
+
+class ControlCenterLogHandler(logging.Handler):
+    """Mirrors log lines to the control center for the active agent."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        agent_id = _CURRENT_AGENT_ID.get()
+        if not agent_id:
+            return
+
+        try:
+            message = record.getMessage()
+            message = _strip_rich_markup(message)
+            if message:
+                REGISTRY.append_log(agent_id, message)
+        except Exception:
+            return
 
 # ── Log directory setup ───────────────────────────────────────────────
 _LOG_DIR = Path("data/logs")
@@ -89,6 +151,7 @@ def setup_logger(
 
     _logger.addHandler(rich_handler)
     _logger.addHandler(file_handler)
+    _logger.addHandler(ControlCenterLogHandler())
 
     return _logger
 

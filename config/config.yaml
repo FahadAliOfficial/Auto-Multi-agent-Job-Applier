@@ -17,7 +17,7 @@ personal:
   zip_code: "38000"
   country: "Pakistan"
   linkedin: "https://www.linkedin.com/in/fahaddali/"
-  website: "https://www.fahadali.me/"
+  website: "https://www.fahaddali.me/"
 
 # --- Resume Configuration ---
 # Place your resume PDFs in config/resumes/
@@ -35,13 +35,24 @@ resume:
     #   path: "config/resumes/leadership.pdf"
     #   keywords: ["manager", "lead", "director", "head of", "vp", "principal", "senior"]
 
+# --- Resume Maker ---
+# Controls resume maker behavior when you use the web UI.
+resume_maker:
+  # If true, summarize the job description locally via Ollama before AI polish.
+  # If false, skip local summarization and send the original JD to the selected model.
+  use_local_jd_summary: false
+
 # --- Job Search Criteria ---
 search:
   # List of job title queries to search for (bot runs each query)
   queries:
     - "Software Engineer"
     - "Python Developer"
+    - "MERN"
     - "Web Scrapper"
+    - "Stack Developer"
+    - "Full Stack"
+    - "Full-Stack"
     - "Full Stack Developer"
     - "Backend Developer"
     - "Frontend Developer"
@@ -75,7 +86,7 @@ search:
   salary_min: 0
 
   # Date posted: "1" (24h), "3" (3 days), "7" (7 days), "14" (14 days), or "" for any time
-  date_posted: "7"
+  date_posted: "1"
 
   # Only apply to "Easy Apply" jobs (recommended: true)
   easy_apply_only: true
@@ -87,6 +98,26 @@ search:
 bot:
   # Mode: "semi" (review each job before applying) or "auto" (apply automatically)
   mode: "semi"
+  # Number of concurrent apply agents (1 keeps legacy single-agent flow)
+  agents: 1
+  orchestrator:
+    enabled: true
+    max_concurrent_agents: 4
+    headless_per_agent: null
+    control_center: true
+    host: "127.0.0.1"
+    port: 5000
+    # Countries to search. Bot runs all queries on each country's Indeed site.
+    # Supported: us, pk, uk, ca, au, in
+    # us = indeed.com | pk = pk.indeed.com | uk = uk.indeed.com
+    countries:
+      - us
+      - pk
+      - uk
+      - ca
+      - au
+      - in
+      - ae
 
   # Maximum applications per session (0 = unlimited)
   max_applications: 25
@@ -99,8 +130,8 @@ bot:
     between_pages_max: 8
     between_actions_min: 1
     between_actions_max: 3
-    typing_min_ms: 50
-    typing_max_ms: 150
+    typing_min_ms: 12
+    typing_max_ms: 35
 
   # Take a screenshot after each application
   screenshot_on_apply: true
@@ -111,7 +142,7 @@ bot:
   # Browser settings
   browser:
     headless: false  # Set to true for background operation (higher detection risk)
-    slow_mo: 50      # Milliseconds to slow down each Playwright action
+    slow_mo: 0       # Milliseconds to slow down each Playwright action
     viewport_width: 1366
     viewport_height: 768
 
@@ -124,3 +155,7 @@ skip_keywords:
 # --- Companies to Skip ---
 # Jobs from these companies will be skipped
 skip_companies: []
+
+
+preferences:
+  education: "Bachelor's Degree"

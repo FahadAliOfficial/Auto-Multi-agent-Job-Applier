@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+{% block title %}Control Center{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h2>Control Center</h2>
+    <p>Live multi-agent orchestration view</p>
+</div>
+
+<div class="stats-row" id="global-stats">
+    <div class="card stat-card"><div class="stat-value">{{ snap.global.found }}</div><div class="stat-label">Found</div></div>
+    <div class="card stat-card"><div class="stat-value">{{ snap.global.applied }}</div><div class="stat-label">Applied</div></div>
+    <div class="card stat-card"><div class="stat-value">{{ snap.global.skipped }}</div><div class="stat-label">Skipped</div></div>
+    <div class="card stat-card"><div class="stat-value">{{ snap.global.failed }}</div><div class="stat-label">Failed</div></div>
+    <div class="card stat-card"><div class="stat-value">{{ snap.global.captcha_wait }}</div><div class="stat-label">Captcha Wait</div></div>
+</div>
+
+<style>
+    #agents-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem;
+    }
+
+    @media (max-width: 980px) {
+        #agents-grid { grid-template-columns: 1fr; }
+    }
+
+    .job-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        background: rgba(79, 195, 247, 0.1);
+        border: 1px solid rgba(79, 195, 247, 0.2);
+        border-radius: 999px;
+        padding: 2px 8px;
+        font-size: 0.7rem;
+        color: #a8d9ff;
+    }
+
+    .job-modal {
+        position: fixed;
+        inset: 0;
+        background: rgba(8, 10, 18, 0.75);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 999;
+        padding: 1.5rem;
+    }
+
+    .job-modal.open { display: flex; }
+
+    .job-modal-card {
+        width: min(820px, 96vw);
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 1.25rem 1.5rem;
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+        max-height: 85vh;
+        overflow: auto;
+    }
+</style>
+
+<div id="agents-grid">
+    {% for agent in snap.agents %}
+    <section class="card" data-agent-id="{{ agent.agent_id }}">
+        <h3 style="margin-bottom:.5rem;">{{ agent.agent_id }}</h3>
+        <div id="meta-{{ agent.agent_id }}" style="font-size:.85rem;color:var(--text-muted);margin-bottom:.75rem;">
+            state={{ agent.state }} | query={{ agent.query or '-' }} | job={{ agent.current_job or '-' }}
+        </div>
+        <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px;padding:.75rem;margin-bottom:.75rem;">
+            <div id="job-title-{{ agent.agent_id }}" style="font-weight:600;margin-bottom:.35rem;">No active job</div>
+            <div id="job-company-{{ agent.agent_id }}" style="font-size:.8rem;color:var(--text-muted);margin-bottom:.5rem;"></div>
+            <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.5rem;">
+                <span id="job-salary-{{ agent.agent_id }}" class="job-chip" style="display:none;"></span>
+                <span id="job-type-{{ agent.agent_id }}" class="job-chip" style="display:none;"></span>
+                <span id="job-location-{{ agent.agent_id }}" class="job-chip" style="display:none;"></span>
+            </div>
+            <div id="job-preview-{{ agent.agent_id }}" style="font-size:.78rem;color:#9fb0e8;min-height:2.2rem;"></div>
+            <div style="margin-top:.5rem;">
+                <button class="btn-sm" onclick="openJobModal('{{ agent.agent_id }}')">View details</button>
+            </div>
+        </div>
+        <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.75rem;">
+            <button class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','skip')">Skip Job</button>
+            <button class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','continue')">Continue</button>
+            <button class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','focus_tab')">Focus Tab</button>
+            <button class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','pause')">Pause</button>
+            <button class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','resume')">Resume</button>
+            <button class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','stop')">Stop</button>
+            <button class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','retry_last')">Retry Last</button>
+        </div>
+        <pre id="logs-{{ agent.agent_id }}" style="height:280px;overflow:auto;background:#0b1020;border:1px solid var(--border);border-radius:10px;padding:.75rem;font-size:.75rem;color:#b8c8ff;">Waiting for logs...</pre>
+        <div style="margin-top:.75rem;background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px;padding:.6rem .75rem;">
+            <div style="font-size:.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem;">Prompt</div>
+            <div id="prompt-{{ agent.agent_id }}" style="font-size:.82rem;min-height:1.5rem;">No prompt pending.</div>
+            <div id="prompt-options-{{ agent.agent_id }}" style="margin-top:.4rem;font-size:.75rem;color:#a6b7ff;"></div>
+        </div>
+        <form onsubmit="sendAnswer('{{ agent.agent_id }}'); return false;" style="display:flex;gap:.4rem;margin-top:.6rem;">
+            <input id="answer-{{ agent.agent_id }}" type="text" placeholder="Type answer..." style="flex:1;min-width:120px;">
+            <button class="btn-sm" type="submit">Send</button>
+        </form>
+    </section>
+    {% endfor %}
+</div>
+
+<div id="job-modal" class="job-modal" onclick="closeJobModal(event)">
+    <div class="job-modal-card">
+        <div style="display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;">
+            <div>
+                <h3 id="job-modal-title" style="margin-bottom:.25rem;">Job details</h3>
+                <div id="job-modal-company" style="color:var(--text-muted);font-size:.85rem;"></div>
+            </div>
+            <button class="btn-sm" onclick="closeJobModal(event)">Close</button>
+        </div>
+        <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin:.75rem 0 1rem;">
+            <span id="job-modal-salary" class="job-chip" style="display:none;"></span>
+            <span id="job-modal-type" class="job-chip" style="display:none;"></span>
+            <span id="job-modal-location" class="job-chip" style="display:none;"></span>
+        </div>
+        <div id="job-modal-description" style="font-size:.85rem;color:#c8d4ff;white-space:pre-wrap;"></div>
+        <div style="margin-top:1rem;">
+            <a id="job-modal-link" href="#" target="_blank" rel="noopener">Open on Indeed</a>
+        </div>
+    </div>
+</div>
+
+<script>
+async function refreshAgents() {
+    const res = await fetch('/api/agents');
+    if (!res.ok) return;
+    const data = await res.json();
+    const stats = data.global || {};
+    const cards = document.querySelectorAll('#global-stats .stat-value');
+    if (cards.length >= 5) {
+        cards[0].textContent = stats.found ?? 0;
+        cards[1].textContent = stats.applied ?? 0;
+        cards[2].textContent = stats.skipped ?? 0;
+        cards[3].textContent = stats.failed ?? 0;
+        cards[4].textContent = stats.captcha_wait ?? 0;
+    }
+    for (const agent of (data.agents || [])) {
+        const meta = document.getElementById(`meta-${agent.agent_id}`);
+        if (meta) {
+            meta.textContent = `state=${agent.state || '-'} | query=${agent.query || '-'} | job=${agent.current_job || '-'}`;
+        }
+        await refreshLogs(agent.agent_id);
+        await refreshPrompt(agent.agent_id);
+        await refreshJobSummary(agent.agent_id);
+    }
+}
+
+async function refreshLogs(agentId) {
+    const box = document.getElementById(`logs-${agentId}`);
+    if (!box) return;
+    const res = await fetch(`/api/agents/${agentId}/logs`);
+    if (!res.ok) return;
+    const data = await res.json();
+    box.textContent = (data.logs || []).join('\n');
+    box.scrollTop = box.scrollHeight;
+}
+
+async function refreshPrompt(agentId) {
+    const promptBox = document.getElementById(`prompt-${agentId}`);
+    const optionsBox = document.getElementById(`prompt-options-${agentId}`);
+    const answerInput = document.getElementById(`answer-${agentId}`);
+    if (!promptBox || !answerInput || !optionsBox) return;
+    const res = await fetch(`/api/agents/${agentId}/prompt`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const prompt = data.prompt || null;
+    if (!prompt) {
+        promptBox.textContent = 'No prompt pending.';
+        optionsBox.textContent = '';
+        answerInput.disabled = true;
+        answerInput.placeholder = 'Waiting for prompt...';
+        return;
+    }
+    promptBox.textContent = prompt.text || '';
+    const options = prompt.options || [];
+    optionsBox.textContent = options.length ? `Options: ${options.join(' | ')}` : '';
+    answerInput.disabled = false;
+    answerInput.placeholder = prompt.allow_empty ? 'Type answer or leave blank...' : 'Type answer...';
+}
+
+async function agentAction(agentId, action) {
+    await fetch(`/api/agents/${agentId}/action`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action}),
+    });
+    await refreshAgents();
+}
+
+async function sendAnswer(agentId) {
+    const input = document.getElementById(`answer-${agentId}`);
+    if (!input || input.disabled) return;
+    const answer = input.value || '';
+    await fetch(`/api/agents/${agentId}/answer`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({answer}),
+    });
+    input.value = '';
+    await refreshPrompt(agentId);
+}
+
+async function refreshJobSummary(agentId) {
+    const titleEl = document.getElementById(`job-title-${agentId}`);
+    const companyEl = document.getElementById(`job-company-${agentId}`);
+    const previewEl = document.getElementById(`job-preview-${agentId}`);
+    const salaryEl = document.getElementById(`job-salary-${agentId}`);
+    const typeEl = document.getElementById(`job-type-${agentId}`);
+    const locEl = document.getElementById(`job-location-${agentId}`);
+    if (!titleEl || !companyEl || !previewEl || !salaryEl || !typeEl || !locEl) return;
+
+    const res = await fetch(`/api/agents/${agentId}/job`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const job = data.job || null;
+
+    if (!job) {
+        titleEl.textContent = 'No active job';
+        companyEl.textContent = '';
+        previewEl.textContent = '';
+        salaryEl.style.display = 'none';
+        typeEl.style.display = 'none';
+        locEl.style.display = 'none';
+        return;
+    }
+
+    titleEl.textContent = job.title || 'Untitled job';
+    companyEl.textContent = job.company || '';
+    previewEl.textContent = job.description_preview || '';
+
+    if (job.salary) {
+        salaryEl.textContent = job.salary;
+        salaryEl.style.display = 'inline-flex';
+    } else {
+        salaryEl.style.display = 'none';
+    }
+
+    if (job.job_type) {
+        typeEl.textContent = job.job_type;
+        typeEl.style.display = 'inline-flex';
+    } else {
+        typeEl.style.display = 'none';
+    }
+
+    if (job.location) {
+        locEl.textContent = job.location;
+        locEl.style.display = 'inline-flex';
+    } else {
+        locEl.style.display = 'none';
+    }
+}
+
+async function openJobModal(agentId) {
+    const res = await fetch(`/api/agents/${agentId}/job`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const job = data.job || null;
+    if (!job) return;
+
+    const modal = document.getElementById('job-modal');
+    const titleEl = document.getElementById('job-modal-title');
+    const companyEl = document.getElementById('job-modal-company');
+    const salaryEl = document.getElementById('job-modal-salary');
+    const typeEl = document.getElementById('job-modal-type');
+    const locEl = document.getElementById('job-modal-location');
+    const descEl = document.getElementById('job-modal-description');
+    const linkEl = document.getElementById('job-modal-link');
+
+    if (!modal || !titleEl || !companyEl || !salaryEl || !typeEl || !locEl || !descEl || !linkEl) return;
+
+    titleEl.textContent = job.title || 'Job details';
+    companyEl.textContent = job.company || '';
+    descEl.textContent = job.description || job.description_preview || '';
+    linkEl.href = job.url || '#';
+
+    if (job.salary) {
+        salaryEl.textContent = job.salary;
+        salaryEl.style.display = 'inline-flex';
+    } else {
+        salaryEl.style.display = 'none';
+    }
+
+    if (job.job_type) {
+        typeEl.textContent = job.job_type;
+        typeEl.style.display = 'inline-flex';
+    } else {
+        typeEl.style.display = 'none';
+    }
+
+    if (job.location) {
+        locEl.textContent = job.location;
+        locEl.style.display = 'inline-flex';
+    } else {
+        locEl.style.display = 'none';
+    }
+
+    modal.classList.add('open');
+}
+
+function closeJobModal(event) {
+    const modal = document.getElementById('job-modal');
+    if (!modal) return;
+    if (event && event.target && event.target !== modal && !event.target.closest('.job-modal-card')) {
+        return;
+    }
+    modal.classList.remove('open');
+}
+
+setInterval(refreshAgents, 2000);
+refreshAgents();
+</script>
+{% endblock %}

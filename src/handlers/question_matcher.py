@@ -20,6 +20,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 
 from src.utils.logger import logger
+from src.control_center import REGISTRY
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -82,6 +83,10 @@ class QuestionMatcher:
             if row is None:
                 return (None, 0.0)
 
+            answer = row[1] if isinstance(row, tuple) else row["answer"]
+            if not answer or not str(answer).strip():
+                return (None, 0.0)
+
             row_id = row[0] if isinstance(row, tuple) else row["id"]
             await self._db.execute(
                 "UPDATE screening_answers "
@@ -90,7 +95,6 @@ class QuestionMatcher:
                 (row_id,),
             )
             await self._db.commit()
-            answer = row[1] if isinstance(row, tuple) else row["answer"]
             return (answer, 1.0)
 
         cursor = await self._db.execute(
@@ -109,6 +113,8 @@ class QuestionMatcher:
         for row in rows:
             saved_question = row[0] if isinstance(row, tuple) else row["question"]
             saved_answer = row[1] if isinstance(row, tuple) else row["answer"]
+            if not saved_answer or not str(saved_answer).strip():
+                continue
 
             ratio = difflib.SequenceMatcher(
                 None,
@@ -120,7 +126,7 @@ class QuestionMatcher:
                 best_ratio = ratio
                 best_answer = saved_answer
 
-        if best_ratio >= CONFIDENCE_THRESHOLD:
+        if best_ratio >= CONFIDENCE_THRESHOLD and best_answer and str(best_answer).strip():
             logger.debug(
                 "Matched saved answer (confidence %.0f%%)",
                 best_ratio * 100,
@@ -150,6 +156,9 @@ class QuestionMatcher:
             answer: The user-supplied or auto-matched answer.
             job_id: Optional job ID to associate the answer with.
         """
+        if answer is None or not str(answer).strip():
+            return
+
         # Check for an existing identical question+answer
         cursor = await self._db.execute(
             "SELECT id, times_used FROM screening_answers "
@@ -189,20 +198,31 @@ class QuestionMatcher:
         question: str,
         options: list[str] | None = None,
         allow_empty: bool = False,
+        agent_id: str | None = None,
     ) -> str:
-        """Ask the user to answer a screening question via the terminal.
+        """Ask the user to answer a screening question.
 
-        Runs the blocking Rich prompt in a thread executor so the async
-        event loop is not blocked.
+        Uses the control center when running with an agent ID; otherwise
+        falls back to a Rich prompt in the terminal.
 
         Args:
             question: The question text to display.
             options: Optional list of answer choices (e.g., from radio
                 buttons or a dropdown).
+            allow_empty: Whether an empty response is allowed.
+            agent_id: Optional agent ID for control center prompts.
 
         Returns:
             The user's answer string.
         """
+        if agent_id:
+            return await self._prompt_via_control_center(
+                agent_id,
+                question,
+                options,
+                allow_empty,
+            )
+
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
@@ -212,11 +232,40 @@ class QuestionMatcher:
             allow_empty,
         )
 
-    def _prompt_sync(
+    async def _prompt_via_control_center(
         self,
+        agent_id: str,
         question: str,
-        options: list[str] | None = None,
-        allow_empty: bool = False,
+        options: list[str] | None,
+        allow_empty: bool,
+    ) -> str:
+        """Wait for a response provided via the web control center."""
+        REGISTRY.set_prompt(agent_id, question, options, allow_empty)
+        display_q = f"{question[:80]}..." if len(question) > 80 else question
+        REGISTRY.append_log(agent_id, f"waiting for input: {display_q}")
+
+        while True:
+            if REGISTRY.is_stopped(agent_id):
+                REGISTRY.clear_prompt(agent_id)
+                return ""
+            if REGISTRY.is_skip_requested(agent_id):
+                REGISTRY.clear_prompt(agent_id)
+                return "__SKIP_JOB__"
+
+            answer = REGISTRY.consume_answer(agent_id)
+            if answer is not None:
+                REGISTRY.clear_prompt(agent_id)
+                if answer.strip().lower() in {"__skip_job__", "skip"}:
+                    return "__SKIP_JOB__"
+                return answer
+
+            await asyncio.sleep(0.5)
+
+    @staticmethod
+    def _prompt_sync(
+        question: str,
+        options: list[str] | None,
+        allow_empty: bool,
     ) -> str:
         """Synchronous Rich prompt shown in the terminal."""
         console.print()
@@ -248,12 +297,12 @@ class QuestionMatcher:
                     return options[choice_idx]
 
             return choice
-        else:
-            return Prompt.ask(
-                "[bold]Your answer[/bold]",
-                default="" if allow_empty else None,
-                show_default=False,
-            )
+
+        return Prompt.ask(
+            "[bold]Your answer[/bold]",
+            default="" if allow_empty else None,
+            show_default=False,
+        )
 
     # ------------------------------------------------------------------
     # Orchestrator
@@ -265,6 +314,8 @@ class QuestionMatcher:
         options: list[str] | None = None,
         job_id: int | None = None,
         fuzzy: bool = True,
+        agent_id: str | None = None,
+        allow_empty: bool = False,
     ) -> str:
         """Find a saved answer or prompt the user, then persist the result.
 
@@ -274,27 +325,38 @@ class QuestionMatcher:
             question: The screening question text.
             options: Optional answer choices.
             job_id: Optional job ID for context.
-
-        Returns:
-            The final answer string (from DB or user input).
+            fuzzy: Whether to use fuzzy matching.
+            agent_id: Optional agent ID for control center prompts.
+            allow_empty: Whether an empty response is allowed.
         """
-        # 1. Try the database first
         saved_answer, confidence = await self.find_answer(question, fuzzy=fuzzy)
         if saved_answer is not None and confidence >= CONFIDENCE_THRESHOLD:
-            logger.info(
-                "[success]✓ AUTO-ANSWER[/success]  %r → %r (confidence %.0f%%)",
-                question[:50],
-                saved_answer,
-                confidence * 100,
-            )
-            return saved_answer
+            if allow_empty or str(saved_answer).strip():
+                logger.info(
+                    "[success]✓ AUTO-ANSWER[/success]  %r → %r (confidence %.0f%%)",
+                    question[:50],
+                    saved_answer,
+                    confidence * 100,
+                )
+                return saved_answer
 
-        # 2. No confident match – ask the user
+        # 2. No confident match - ask the user
         logger.info(
             "[warning]? MANUAL[/warning]  No saved answer for: %s",
             question[:60],
         )
-        answer = await self.prompt_user(question, options)
+        while True:
+            answer = await self.prompt_user(
+                question,
+                options,
+                allow_empty=allow_empty,
+                agent_id=agent_id,
+            )
+            if allow_empty or str(answer).strip():
+                break
+            if agent_id and REGISTRY.is_stopped(agent_id):
+                return ""
+            logger.warning("Empty answer received; waiting for input")
 
         # 3. Save for future use
         await self.save_answer(question, answer, job_id)

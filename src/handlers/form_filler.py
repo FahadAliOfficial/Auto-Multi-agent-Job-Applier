@@ -66,6 +66,7 @@ class FormFiller:
         self._page = page
         self._qm = question_matcher
         self._job_context = job_context or {}
+        self._agent_id = (self._job_context.get("agent_id") or "").strip()
         self._transient_answers: dict[str, str] = {}
 
     # ------------------------------------------------------------------
@@ -194,17 +195,48 @@ class FormFiller:
 
         match field.field_type:
             case FieldType.TEXT_INPUT | FieldType.EMAIL | FieldType.PHONE | FieldType.NUMBER | FieldType.DATE:
+                # Skip if Indeed already pre-filled this field
+                if await self._text_field_already_filled(field):
+                    logger.info(
+                        "[dim]⏭ SKIPPED (pre-filled)[/dim]  %s",
+                        field.label,
+                    )
+                    return (field, True, "Already filled by Indeed – skipped")
                 if field.field_type == FieldType.PHONE:
                     await self._select_phone_country(value)
                     value = self._normalize_phone_for_input(value)
                 return await self._fill_text(field, value)
             case FieldType.TEXTAREA:
+                if await self._text_field_already_filled(field):
+                    logger.info(
+                        "[dim]⏭ SKIPPED (pre-filled)[/dim]  %s",
+                        field.label,
+                    )
+                    return (field, True, "Already filled by Indeed – skipped")
                 return await self._fill_text(field, value)
             case FieldType.SELECT:
+                if await self._select_field_already_filled(field):
+                    logger.info(
+                        "[dim]⏭ SKIPPED (pre-filled)[/dim]  %s",
+                        field.label,
+                    )
+                    return (field, True, "Already filled by Indeed – skipped")
                 return await self._fill_select(field, value)
             case FieldType.RADIO:
+                if await self._radio_already_checked(field):
+                    logger.info(
+                        "[dim]⏭ SKIPPED (pre-filled)[/dim]  %s",
+                        field.label,
+                    )
+                    return (field, True, "Already filled by Indeed – skipped")
                 return await self._fill_radio(field, value)
             case FieldType.CHECKBOX:
+                if await self._checkbox_already_checked(field):
+                    logger.info(
+                        "[dim]⏭ SKIPPED (pre-filled)[/dim]  %s",
+                        field.label,
+                    )
+                    return (field, True, "Already filled by Indeed – skipped")
                 return await self._fill_checkbox(field, value)
             case _:
                 msg = f"Unsupported field type: {field.field_type.name}"
@@ -214,6 +246,86 @@ class FormFiller:
                     msg,
                 )
                 return (field, False, msg)
+
+    # ------------------------------------------------------------------
+    # Pre-fill detection helpers
+    # ------------------------------------------------------------------
+
+    async def _text_field_already_filled(self, field: FormField) -> bool:
+        """Return True if a text/textarea/email/phone/number field already has a value.
+
+        Indeed sometimes pre-fills profile data (name, email, phone…).
+        We detect this by reading the element's current value via JS.  If the
+        field is non-empty we leave it alone rather than overwriting it.
+        """
+        if not field.selector:
+            return False
+        try:
+            locator = self._page.locator(field.selector).first
+            current: str = await locator.input_value(timeout=3000)
+            return bool((current or "").strip())
+        except Exception:
+            return False
+
+    async def _select_field_already_filled(self, field: FormField) -> bool:
+        """Return True if a <select> already has a meaningful (non-placeholder) value."""
+        if not field.selector:
+            return False
+        try:
+            locator = self._page.locator(field.selector).first
+            selected_value: str = await locator.input_value(timeout=3000)
+            if not selected_value or not selected_value.strip():
+                return False
+            # Consider placeholder-like values as "not filled"
+            placeholder_patterns = re.compile(
+                r"^(select|choose|please select|please choose|--|none|n/a)\b",
+                re.IGNORECASE,
+            )
+            # Also check the visible label text
+            selected_text: str = await self._page.evaluate(
+                """
+                (sel) => {
+                    const el = document.querySelector(sel);
+                    if (!el) return '';
+                    const opt = el.options[el.selectedIndex];
+                    return opt ? opt.text : '';
+                }
+                """,
+                field.selector,
+            )
+            selected_text = (selected_text or "").strip()
+            if placeholder_patterns.match(selected_text):
+                return False
+            # If value is 0 / empty string it is likely the placeholder option
+            if selected_value.strip() in {"", "0"}:
+                return False
+            return bool(selected_text)
+        except Exception:
+            return False
+
+    async def _radio_already_checked(self, field: FormField) -> bool:
+        """Return True if any radio button in the group is already checked."""
+        if not field.selector:
+            return False
+        try:
+            radios = self._page.locator(field.selector)
+            count = await radios.count()
+            for i in range(count):
+                if await radios.nth(i).is_checked():
+                    return True
+            return False
+        except Exception:
+            return False
+
+    async def _checkbox_already_checked(self, field: FormField) -> bool:
+        """Return True if the (single) checkbox is already checked."""
+        if not field.selector:
+            return False
+        try:
+            checkbox = self._page.locator(field.selector).first
+            return await checkbox.is_checked()
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------
     # Type-specific fill methods
@@ -244,7 +356,19 @@ class FormFiller:
         except Exception as exc:
             return f"Field not visible before typing: {exc}"
 
-        await type_like_human(self._page, field.selector, value)
+        delays = self._config.get("bot", {}).get("delays", {})
+        min_ms = float(delays.get("typing_min_ms", 12))
+        max_ms = float(delays.get("typing_max_ms", 35))
+        if max_ms < min_ms:
+            min_ms, max_ms = max_ms, min_ms
+
+        await type_like_human(
+            self._page,
+            field.selector,
+            value,
+            min_keystroke_ms=min_ms,
+            max_keystroke_ms=max_ms,
+        )
         try:
             await self._page.keyboard.press("Escape")
             await self._page.wait_for_timeout(300)
@@ -470,17 +594,38 @@ class FormFiller:
             return await self._fill_transient_work_history_field(field)
 
         options = field.options if field.options else None
+        question_key = self._question_key_for_field(field)
+
+        if field.field_type == FieldType.SELECT and field.options:
+            auto_select_answer = self._auto_answer_select_by_options(field.options)
+            if auto_select_answer:
+                selected = await self._try_select_option(
+                    self._page.locator(field.selector), auto_select_answer, field.options
+                )
+                if selected:
+                    logger.info(
+                        "[success]AUTO-ANSWER[/success]  %r -> %r (select options)",
+                        field.label[:60],
+                        selected,
+                    )
+                    return (field, True, f"Screening answer: {selected}")
         answer = self._auto_answer_dynamic_question(field.label)
         if answer:
             logger.info("[success]âœ“ AUTO-DYNAMIC[/success]  %s: %r", field.label, answer)
         else:
             answer = await self._qm.get_or_ask(
-                question=field.label,
+                question=question_key,
                 options=options,
+                agent_id=self._agent_id or None,
+                allow_empty=not field.required,
             )
 
-        if not answer:
+        if not answer or not str(answer).strip():
+            if not field.required:
+                return (field, True, "Skipped optional field")
             return (field, False, "No answer provided for screening question")
+        if str(answer).strip().lower() == "__skip_job__":
+            return (field, False, "Skip requested by user")
 
         # Now fill the answer into the actual field
         match field.field_type:
@@ -524,11 +669,13 @@ class FormFiller:
         if context:
             prompt = f"{field.label}\n\n{context}"
 
-        answer = await self._qm.prompt_user(prompt)
+        answer = await self._qm.prompt_user(prompt, agent_id=self._agent_id or None)
         if answer is None:
             answer = ""
         if not answer.strip():
             return (field, False, "No salary answer provided")
+        if str(answer).strip().lower() == "__skip_job__":
+            return (field, False, "Skip requested by user")
 
         match field.field_type:
             case FieldType.SELECT:
@@ -590,6 +737,12 @@ class FormFiller:
     async def _fill_transient_work_history_field(self, field: FormField) -> FillResult:
         """Prompt for per-job work-history fields without saving/reusing them."""
         cache_key = self._transient_work_history_key(field.label)
+        
+        if self._job_context.get("mode") == "auto" and cache_key in {"job title", "company"}:
+            self._transient_answers[cache_key] = ""
+            logger.info("⏭ Skipping transient %s field in auto mode (leaving empty)", cache_key)
+            return (field, True, f"Skipped {cache_key} field in auto mode")
+
         is_optional_company = cache_key == "company" and not field.required
 
         if cache_key in self._transient_answers:
@@ -611,7 +764,11 @@ class FormFiller:
         if is_optional_company:
             prompt = f"{field.label}\n\nPress Enter to skip."
 
-        answer = await self._qm.prompt_user(prompt, allow_empty=is_optional_company)
+        answer = await self._qm.prompt_user(
+            prompt,
+            allow_empty=is_optional_company,
+            agent_id=self._agent_id or None,
+        )
         if answer is None:
             answer = ""
         self._transient_answers[cache_key] = answer.strip()
@@ -666,13 +823,15 @@ class FormFiller:
                 field.label[:60],
             )
             raw_answer = await self._qm.prompt_user(
-                f"{field.label}\n\nEnter a whole number only."
+                f"{field.label}\n\nEnter a whole number only.",
+                agent_id=self._agent_id or None,
             )
             answer = self._extract_integer_answer(raw_answer) or raw_answer.strip()
 
             while not self._is_integer_answer(answer):
                 raw_answer = await self._qm.prompt_user(
-                    f"{field.label}\n\nPlease enter a valid whole number, e.g. 3."
+                    f"{field.label}\n\nPlease enter a valid whole number, e.g. 3.",
+                    agent_id=self._agent_id or None,
                 )
                 answer = self._extract_integer_answer(raw_answer) or raw_answer.strip()
 
@@ -687,6 +846,60 @@ class FormFiller:
             answer,
         )
         return (field, True, f"Screening answer: {answer}")
+
+    def _question_key_for_field(self, field: FormField) -> str:
+        """Build a cache key; include select-option context for ambiguous labels."""
+        base = field.label or ""
+        if field.field_type != FieldType.SELECT or not field.options:
+            return base
+        signature = self._options_signature(field.options)
+        return f"{base} [options:{signature}]"
+
+    @staticmethod
+    def _options_signature(options: list[str]) -> str:
+        normalized = [
+            re.sub(r"\s+", " ", (opt or "").strip().lower())
+            for opt in options
+            if (opt or "").strip()
+        ]
+        return "|".join(normalized[:10])
+
+    def _auto_answer_select_by_options(self, options: list[str]) -> str | None:
+        """Return a sensible default for known select-option sets."""
+        normalized = [re.sub(r"\s+", " ", (opt or "").strip()) for opt in options if (opt or "").strip()]
+        lowered = {opt.lower() for opt in normalized}
+
+        proficiency_tokens = {
+            "beginner", "intermediate", "advanced", "fluent",
+            "native", "proficient", "basic", "conversational",
+        }
+        language_tokens = {
+            "english", "hindi", "spanish", "french", "chinese",
+            "urdu", "arabic", "german", "japanese", "korean",
+        }
+
+        if lowered & proficiency_tokens:
+            preferred = str(self._config.get("preferences", {}).get("language_proficiency", "")).strip()
+            if preferred:
+                match = self._best_option_match(preferred, normalized)
+                if match:
+                    return match
+            for fallback in ("Fluent", "Advanced", "Intermediate", "Beginner"):
+                match = self._best_option_match(fallback, normalized)
+                if match:
+                    return match
+
+        if lowered & language_tokens:
+            preferred_language = (
+                str(self._config.get("preferences", {}).get("language", "")).strip()
+                or str(self._config.get("personal", {}).get("language", "")).strip()
+                or "English"
+            )
+            match = self._best_option_match(preferred_language, normalized)
+            if match:
+                return match
+
+        return None
 
     @staticmethod
     def _requires_integer_answer(field: FormField) -> bool:
@@ -717,6 +930,22 @@ class FormFiller:
             return False
         if field.field_type == FieldType.CHECKBOX and not field.options:
             return False
+
+        # Selects are often required even when the required marker is not detected.
+        # For known decision categories, prompt anyway when we have selectable options.
+        if field.field_type == FieldType.SELECT and field.options:
+            has_real_options = any(
+                not re.fullmatch(r"\s*select\s+(an\s+)?option\s*", opt.strip(), re.IGNORECASE)
+                for opt in field.options
+            )
+            if has_real_options and field.category in {
+                FieldCategory.EDUCATION,
+                FieldCategory.WORK_AUTHORIZATION,
+                FieldCategory.WILLING_TO_RELOCATE,
+                FieldCategory.SCREENING_QUESTION,
+                FieldCategory.UNKNOWN,
+            }:
+                return True
 
         label = field.label or ""
         question_like = "?" in label

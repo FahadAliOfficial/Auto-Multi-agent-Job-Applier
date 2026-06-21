@@ -1,0 +1,160 @@
+{
+  "profile": {
+    "name": "Fahad Ali",
+    "email": "fahadaliajizansar@gmail.com",
+    "phone": "+92-326-1310007",
+    "location": "P-11, Khurrianwala, Faisalabad",
+    "website": "fahadali.me",
+    "summary": "Software Engineer with 3+ years of experience building data pipelines and deploying scalable AI systems. Stanford and DeepLearning.AI certified. Delivered 20+ automated solutions and engineered architectures using RAG, reinforcement learning, and open-source models."
+  },
+  "links": {
+    "linkedin": "linkedin.com/in/fahaddali/",
+    "github": "github.com/FahadAliOfficial/"
+  },
+  "skills": [
+    "Python",
+    "C#",
+    "C++",
+    "JavaScript",
+    "TypeScript",
+    "Flask",
+    "REST APIs",
+    ".NET",
+    "ETL Pipelines",
+    "Data Ingestion",
+    "Playwright",
+    "Selenium",
+    "BeautifulSoup",
+    "PostgreSQL",
+    "MySQL",
+    "MongoDB",
+    "SQLite",
+    "Supabase",
+    "Next.js",
+    "React",
+    "Docker",
+    "Git",
+    "GitHub",
+    "Jupyter",
+    "TensorFlow",
+    "scikit-learn",
+    "Pandas",
+    "NumPy",
+    "NLP",
+    "RAG",
+    "Reinforcement Learning",
+    "Generative AI",
+    "Intent Detection",
+    "Gemini API"
+  ],
+  "skill_sections": {
+    "machine_learning_ai": [
+      "Natural Language Processing (NLP)",
+      "Retrieval-Augmented Generation (RAG)",
+      "Reinforcement Learning",
+      "Generative AI (Local LLMs, Gemini API)",
+      "Intent Detection",
+      "TensorFlow",
+      "scikit-learn",
+      "Pandas",
+      "NumPy"
+    ],
+    "programming_languages": [
+      "Python",
+      "C#",
+      "C++",
+      "JavaScript",
+      "TypeScript"
+    ],
+    "data_engineering_backend": [
+      "ETL Pipelines",
+      "Data Ingestion (Playwright, Selenium, BeautifulSoup)",
+      "Flask",
+      "REST APIs",
+      ".NET"
+    ],
+    "databases": [
+      "PostgreSQL",
+      "MySQL",
+      "MongoDB",
+      "SQLite",
+      "Supabase"
+    ],
+    "frontend": [
+      "Next.js",
+      "React"
+    ],
+    "tools": [
+      "Docker",
+      "Linux (Ubuntu, Fedora, Arch Linux)",
+      "Git",
+      "GitHub",
+      "VS Code",
+      "Jupyter"
+    ]
+  },
+  "experience": [
+    {
+      "title": "Freelance Python Developer & Data Engineer",
+      "company": "Remote",
+      "location": "Remote",
+      "period": "2022 - Present",
+      "bullets": [
+        "Designed and deployed AI agents that automated complex tasks, client communications, and sales pipelines.",
+        "Engineered 20+ robust data ingestion pipelines and integration solutions for global clients, enabling large-scale data collection and preparation.",
+        "Architected backend ETL processes and Flask applications to process and clean 10,000+ daily records into MySQL/PostgreSQL databases.",
+        "Reduced manual workloads by 80% through intelligent automation tools."
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "name": "Academia.ai",
+      "description": "Python, RAG, Google Gemini, Full-Stack",
+      "bullets": [
+        "Architected course-specific AI chatbots using a Retrieval-Augmented Generation (RAG) pipeline and Gemini API for accurate localized knowledge retrieval.",
+        "Engineered an intelligent exam portal that dynamically generates assessments and automates performance reporting, reducing manual grading effort."
+      ]
+    },
+    {
+      "name": "AI Sales Calling Agent",
+      "description": "Python, Local LLMs, NLP",
+      "bullets": [
+        "Architected an autonomous AI sales agent using local open-source models for real-time conversational capability.",
+        "Engineered advanced intent detection and state management to guide conversation flow and dynamic responses."
+      ]
+    },
+    {
+      "name": "Adaptive Learning",
+      "description": "Reinforcement Learning, Python, Docker",
+      "bullets": [
+        "Developed a reinforcement learning-based programming platform that adapts curriculum pacing and difficulty based on user performance.",
+        "Built and integrated a custom Docker container for Judge0 to provide a secure, scalable compiler API for real-time code execution."
+      ]
+    }
+  ],
+  "education": [
+    {
+      "degree": "Bachelor's in Computer Science",
+      "institution": "National Textile University, Faisalabad",
+      "location": "Faisalabad, PK",
+      "year": "Oct 2022 - Present",
+      "bullets": [
+        "Relevant coursework: Data Structures, Algorithms, Database Systems, Machine Learning."
+      ]
+    }
+  ],
+  "certifications": [
+    "Machine Learning Specialization – Stanford University & DeepLearning.AI (2024)",
+    "Google Data Analytics Professional Certificate – Google (2025)",
+    "Python for Data Science, AI & Development – IBM (2025)",
+    "Python Data Structures – University of Michigan (2025)",
+    "AI For Everyone – DeepLearning.AI (2024)",
+    "Microsoft AI & ML Engineering Professional Certificate – Microsoft (In Progress)"
+  ],
+  "additional_info": [
+    "Contributed to projects on GitHub with 40+ repositories.",
+    "Volunteer mentor for junior developers in local coding communities.",
+    "Featured project showcases on personal portfolio website."
+  ]
+}

@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Resume Maker</title>
+    <style>
+        :root { --bg:#0f1220; --panel:#171b2e; --text:#e8ebff; --muted:#9aa4cf; --accent:#57c7ff; --border:#2a3156; }
+        * { box-sizing: border-box; }
+        body { margin:0; font-family: Inter, Arial, sans-serif; background:var(--bg); color:var(--text); }
+        .wrap { padding:16px; display:grid; grid-template-columns:1fr 1fr 1.35fr; gap:12px; min-height:100vh; }
+        .panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px; }
+        h1 { margin:0 0 10px; font-size:20px; }
+        h2 { margin:0 0 8px; font-size:14px; color:#c9d2ff; }
+        textarea, select, input { width:100%; background:#0e1326; color:var(--text); border:1px solid var(--border); border-radius:8px; padding:10px; }
+        textarea { min-height:220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+        .small { color:var(--muted); font-size:12px; }
+        .row { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:8px 0; }
+        .btns { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+        button { border:1px solid var(--border); background:#112444; color:#eaf7ff; border-radius:8px; padding:9px 12px; cursor:pointer; }
+        button.primary { background:#0a4f78; border-color:#1c6794; }
+        pre { margin:0; white-space:pre-wrap; word-wrap:break-word; background:#0b1022; border:1px solid var(--border); border-radius:8px; padding:10px; min-height:420px; max-height:70vh; overflow:auto; }
+        ul { margin:6px 0 0 18px; }
+        .preview-toolbar { display:flex; align-items:center; gap:10px; margin:8px 0; }
+        .preview-toolbar label { font-size:12px; color:var(--muted); }
+        .preview-toolbar input[type="range"] { width:170px; }
+        .preview-zoom { min-width:44px; font-size:12px; color:var(--muted); }
+        .mode-badge {
+            display:inline-block; margin-left:8px; padding:3px 8px; border-radius:999px;
+            font-size:11px; font-weight:700; letter-spacing:.2px; border:1px solid var(--border);
+            background:#103b24; color:#a8f5c8; vertical-align:middle;
+        }
+        .mode-meta { margin-top:6px; color:var(--muted); font-size:12px; }
+        @media (max-width: 1320px) {
+            .wrap { grid-template-columns:1fr; }
+        }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <section class="panel">
+        <h1>
+            Resume Maker
+            <span class="mode-badge">Low-Cost Mode: {{ "ON" if low_cost_mode else "OFF" }}</span>
+        </h1>
+        <div class="mode-meta">
+            openai={{ openai_model_name }} | gemini={{ gemini_model_name }} | jd_limit={{ jd_char_limit }} chars | max_output_tokens={{ max_output_tokens }}
+        </div>
+        <h2>Master Resume JSON</h2>
+        <textarea id="master">{{ master_json }}</textarea>
+        <div class="btns">
+            <button onclick="saveMaster()">Save Master</button>
+        </div>
+        <div class="small">Tip: Keep this factual. AI will tailor wording, ordering, and summary but should not invent facts.</div>
+    </section>
+
+    <section class="panel">
+        <h2>Job Description</h2>
+        <textarea id="jd" placeholder="Paste full job description here..."></textarea>
+        <div class="row">
+            <div>
+                <label class="small">Provider</label>
+                <select id="ai_provider" onchange="syncModelByProvider()">
+                    <option value="openai" selected>OpenAI</option>
+                    <option value="gemini">Gemini</option>
+                </select>
+            </div>
+            <div>
+                <label class="small">Model</label>
+                <select id="model">
+                    <option value="{{ openai_model_name }}" data-provider="openai" selected>{{ openai_model_name }}</option>
+                    <option value="{{ gemini_model_name }}" data-provider="gemini">{{ gemini_model_name }}</option>
+                </select>
+            </div>
+        </div>
+        <div class="row">
+            <div>
+                <label class="small">Job Title Hint</label>
+                <input id="job_title_hint" placeholder="Software Engineer" />
+            </div>
+            <div></div>
+        </div>
+        <div class="small" style="margin-top:6px;">
+            <label><input type="checkbox" id="use_openai_polish" {% if default_use_openai_polish %}checked{% endif %}> Use AI Polish (costs API tokens)</label>
+        </div>
+        <div class="btns">
+            <button class="primary" onclick="tailor()">Tailor Resume</button>
+            <button onclick="exportFiles()">Export Files</button>
+        </div>
+        <div id="meta" class="small" style="margin-top:8px;"></div>
+        <h2 style="margin-top:12px;">Changes</h2>
+        <ul id="changes"></ul>
+    </section>
+
+    <section class="panel">
+        <h2>Live Preview</h2>
+        <div class="btns" style="margin-top:0;">
+            <button id="tab-rendered" class="primary" onclick="showPreview('rendered')">Rendered</button>
+            <button id="tab-markdown" onclick="showPreview('markdown')">Markdown</button>
+        </div>
+        <div class="preview-toolbar" id="preview-toolbar">
+            <label for="preview-scale">Zoom</label>
+            <input id="preview-scale" type="range" min="80" max="180" step="5" value="120" oninput="applyPreviewScale()">
+            <span class="preview-zoom" id="preview-scale-label">120%</span>
+        </div>
+        <iframe id="preview-frame" style="width:100%;height:76vh;border:1px solid var(--border);border-radius:8px;background:white;"></iframe>
+        <pre id="preview" style="display:none;"></pre>
+    </section>
+</div>
+
+<script>
+let lastTailored = null;
+let previewMode = 'rendered';
+
+function parseMaster() {
+    const txt = document.getElementById('master').value;
+    return JSON.parse(txt);
+}
+
+function syncModelByProvider() {
+    const provider = document.getElementById('ai_provider').value;
+    const modelSelect = document.getElementById('model');
+    if (!modelSelect) return;
+    let chosen = false;
+    for (const opt of modelSelect.options) {
+        const visible = (opt.dataset.provider || 'openai') === provider;
+        opt.hidden = !visible;
+        if (visible && !chosen) {
+            modelSelect.value = opt.value;
+            chosen = true;
+        }
+    }
+}
+
+function showPreview(mode) {
+    previewMode = mode;
+    const frame = document.getElementById('preview-frame');
+    const md = document.getElementById('preview');
+    const tabRendered = document.getElementById('tab-rendered');
+    const tabMarkdown = document.getElementById('tab-markdown');
+    const toolbar = document.getElementById('preview-toolbar');
+    if (mode === 'rendered') {
+        frame.style.display = 'block';
+        md.style.display = 'none';
+        if (toolbar) toolbar.style.display = 'flex';
+        tabRendered.classList.add('primary');
+        tabMarkdown.classList.remove('primary');
+    } else {
+        frame.style.display = 'none';
+        md.style.display = 'block';
+        if (toolbar) toolbar.style.display = 'none';
+        tabRendered.classList.remove('primary');
+        tabMarkdown.classList.add('primary');
+    }
+}
+
+function applyPreviewScale() {
+    const frame = document.getElementById('preview-frame');
+    const slider = document.getElementById('preview-scale');
+    const label = document.getElementById('preview-scale-label');
+    if (!frame || !slider) return;
+    const pct = Number(slider.value || 100);
+    if (label) label.textContent = `${pct}%`;
+    try {
+        const doc = frame.contentDocument || frame.contentWindow.document;
+        if (doc && doc.body) {
+            doc.body.style.zoom = `${pct}%`;
+            doc.body.style.transformOrigin = 'top left';
+        }
+    } catch (e) {
+        // ignore
+    }
+}
+
+async function saveMaster() {
+    try {
+        const master = parseMaster();
+        const res = await fetch('/api/master/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ master_resume: master }),
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Save failed');
+        alert('Master resume saved.');
+    } catch (e) {
+        alert(`Save failed: ${e.message}`);
+    }
+}
+
+async function tailor() {
+    try {
+        const master = parseMaster();
+        const jd = document.getElementById('jd').value;
+        const aiProvider = document.getElementById('ai_provider').value;
+        const model = document.getElementById('model').value;
+        const useOpenAiPolish = document.getElementById('use_openai_polish').checked;
+        document.getElementById('meta').textContent = 'Tailoring...';
+        const res = await fetch('/api/tailor', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ master_resume: master, job_description: jd, ai_provider: aiProvider, model, use_openai_polish: useOpenAiPolish }),
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Tailor failed');
+        lastTailored = data.tailored_resume;
+        document.getElementById('preview').textContent = data.markdown || '';
+        document.getElementById('preview-frame').srcdoc = data.html_preview || '';
+        const frame = document.getElementById('preview-frame');
+        if (frame) {
+            frame.onload = () => applyPreviewScale();
+        }
+        document.getElementById('meta').textContent =
+            `mode=${data.use_openai_polish ? `${data.ai_provider} (${data.model})` : 'Heuristic + optional Ollama JD summary'} | ai_polish=${data.use_openai_polish} | ai_call_succeeded=${data.ai_call_succeeded} | low_cost=${data.low_cost_mode} | jd_limit=${data.jd_char_limit} | max_output_tokens=${data.max_output_tokens} | cached=${data.cached} | est input tokens=${data.estimated_input_tokens} | est output tokens=${data.estimated_output_tokens}`;
+        const ul = document.getElementById('changes');
+        ul.innerHTML = '';
+        (data.changes || []).forEach(c => {
+            const li = document.createElement('li');
+            li.textContent = c;
+            ul.appendChild(li);
+        });
+    } catch (e) {
+        document.getElementById('meta').textContent = `Error: ${e.message}`;
+    }
+}
+
+async function exportFiles() {
+    try {
+        if (!lastTailored) {
+            alert('Tailor first, then export.');
+            return;
+        }
+        const jobTitle = document.getElementById('job_title_hint').value;
+        const res = await fetch('/api/export', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ tailored_resume: lastTailored, job_title_hint: jobTitle }),
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Export failed');
+        alert(`Exported:\n${data.files.folder}`);
+    } catch (e) {
+        alert(`Export failed: ${e.message}`);
+    }
+}
+
+showPreview('rendered');
+syncModelByProvider();
+applyPreviewScale();
+</script>
+</body>
+</html>

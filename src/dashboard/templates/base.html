@@ -59,6 +59,7 @@
             top: 0; bottom: 0; left: 0;
             z-index: 100;
             padding: 1.5rem 0;
+            transition: transform 0.2s ease;
         }
 
         .sidebar-brand {
@@ -113,6 +114,28 @@
             flex: 1;
             padding: 2rem 2.5rem;
             min-width: 0;
+            transition: margin-left 0.2s ease;
+        }
+
+        .sidebar-toggle {
+            position: fixed;
+            top: 1rem;
+            right: 1.25rem;
+            z-index: 200;
+            background: rgba(79, 195, 247, 0.15);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            padding: 0.45rem 0.9rem;
+            border-radius: 999px;
+            font-size: 0.78rem;
+        }
+
+        body.sidebar-collapsed .sidebar {
+            transform: translateX(-100%);
+        }
+
+        body.sidebar-collapsed .main {
+            margin-left: 0;
         }
 
         .page-header {
@@ -307,6 +330,7 @@
     {% block extra_head %}{% endblock %}
 </head>
 <body>
+    <button id="sidebar-toggle" class="sidebar-toggle" type="button">Hide Sidebar</button>
     <div class="layout">
         <!-- Sidebar -->
         <aside class="sidebar">
@@ -327,6 +351,9 @@
                 <a href="/questions" class="{% if request.path == '/questions' %}active{% endif %}">
                     <span class="icon">❓</span> Questions
                 </a>
+                <a href="/control-center" class="{% if request.path == '/control-center' %}active{% endif %}">
+                    <span class="icon">C</span> Control Center
+                </a>
             </nav>
             <div class="sidebar-footer">
                 Indeed Easy Apply Bot &copy; 2026
@@ -338,5 +365,24 @@
             {% block content %}{% endblock %}
         </main>
     </div>
+    <script>
+        (function () {
+            const body = document.body;
+            const button = document.getElementById('sidebar-toggle');
+            if (!button) return;
+
+            const stored = window.localStorage.getItem('sidebarCollapsed');
+            if (stored === 'true') {
+                body.classList.add('sidebar-collapsed');
+                button.textContent = 'Show Sidebar';
+            }
+
+            button.addEventListener('click', () => {
+                const collapsed = body.classList.toggle('sidebar-collapsed');
+                button.textContent = collapsed ? 'Show Sidebar' : 'Hide Sidebar';
+                window.localStorage.setItem('sidebarCollapsed', collapsed ? 'true' : 'false');
+            });
+        })();
+    </script>
 </body>
 </html>

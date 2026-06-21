@@ -35,6 +35,7 @@ Examples:
   python -m src.main search -q "Data Engineer"
   python -m src.main status                  # Show stats
   python -m src.main dashboard               # Launch web dashboard
+  python -m src.main resume-maker            # Launch standalone resume maker
         """,
     )
 
@@ -49,6 +50,10 @@ Examples:
     run_parser.add_argument(
         "--config", default="config/config.yaml",
         help="Path to config file (default: config/config.yaml)"
+    )
+    run_parser.add_argument(
+        "--agents", type=int, default=None,
+        help="Number of concurrent agents (overrides config bot.agents)"
     )
 
     # --- login ---
@@ -87,6 +92,17 @@ Examples:
         help="Host to bind to (default: 127.0.0.1)"
     )
 
+    # --- resume-maker ---
+    resume_maker_parser = subparsers.add_parser("resume-maker", help="Launch standalone resume maker app")
+    resume_maker_parser.add_argument(
+        "--port", type=int, default=5050,
+        help="Port to run resume maker on (default: 5050)"
+    )
+    resume_maker_parser.add_argument(
+        "--host", default="127.0.0.1",
+        help="Host to bind to (default: 127.0.0.1)"
+    )
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -104,6 +120,8 @@ Examples:
         _cmd_status(args)
     elif args.command == "dashboard":
         _cmd_dashboard(args)
+    elif args.command == "resume-maker":
+        _cmd_resume_maker(args)
 
 
 # ------------------------------------------------------------------
@@ -113,13 +131,24 @@ Examples:
 def _cmd_run(args):
     """Start the bot."""
     from src.bot import IndeedBot
+    from src.control_center import REGISTRY
 
-    console.print("[bold cyan]🚀 Indeed Easy Apply Bot[/bold cyan]\n")
+    console.print("[bold cyan]Indeed Easy Apply Bot[/bold cyan]\n")
     bot = IndeedBot(config_path=args.config)
     try:
-        asyncio.run(bot.run(mode=args.mode))
+        asyncio.run(bot.run(mode=args.mode, agents_override=args.agents))
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped by user[/yellow]")
+        try:
+            snap = REGISTRY.snapshot()
+            for agent in snap.get("agents", []):
+                REGISTRY.action(agent.get("agent_id", ""), "stop")
+        except Exception:
+            pass
+        try:
+            asyncio.run(bot.shutdown())
+        except Exception:
+            pass
 
 
 def _cmd_login(args):
@@ -158,6 +187,30 @@ def _cmd_dashboard(args):
     )
 
     app = create_app(db_path="data/indeed_bot.db")
+    app.run(host=args.host, port=args.port, debug=True)
+
+
+def _cmd_resume_maker(args):
+    """Launch standalone resume maker app."""
+    from src.resume_maker.app import create_resume_maker_app
+    from src.resume_maker.engine import _load_gemini_api_key, _load_openai_api_key
+
+    has_openai = bool(_load_openai_api_key())
+    has_gemini = bool(_load_gemini_api_key())
+    if has_openai or has_gemini:
+        api_status = (
+            f"[green]Keys detected:[/green] OPENAI={has_openai} | GEMINI={has_gemini}"
+        )
+    else:
+        api_status = (
+            "[yellow]No OpenAI/Gemini API key found; AI tailoring will fall back to heuristics.[/yellow]"
+        )
+    console.print(
+        f"[bold cyan]Resume Maker[/bold cyan] at "
+        f"[link=http://{args.host}:{args.port}]http://{args.host}:{args.port}[/link]\n"
+        f"{api_status}\n"
+    )
+    app = create_resume_maker_app()
     app.run(host=args.host, port=args.port, debug=True)
 
 

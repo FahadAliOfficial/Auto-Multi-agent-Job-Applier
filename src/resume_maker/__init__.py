@@ -1,0 +1,2 @@
+"""Standalone resume maker app."""
+

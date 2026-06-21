@@ -27,6 +27,7 @@ from flask import (
     render_template,
     request,
 )
+from src.control_center import REGISTRY
 
 
 # ── Database helpers ──────────────────────────────────────────────────
@@ -248,6 +249,42 @@ def create_app(db_path: str = "data/indeed_bot.db") -> Flask:
             "SELECT * FROM search_sessions ORDER BY started_at DESC"
         ).fetchall()
         return render_template("sessions.html", sessions=rows)
+
+    @app.route("/control-center")
+    def control_center():
+        """Live multi-agent control center."""
+        snap = REGISTRY.snapshot()
+        return render_template("control_center.html", snap=snap)
+
+    @app.route("/api/agents")
+    def api_agents():
+        return jsonify(REGISTRY.snapshot())
+
+    @app.route("/api/agents/<agent_id>/logs")
+    def api_agent_logs(agent_id: str):
+        return jsonify({"agent_id": agent_id, "logs": REGISTRY.logs(agent_id)})
+
+    @app.route("/api/agents/<agent_id>/action", methods=["POST"])
+    def api_agent_action(agent_id: str):
+        payload = request.get_json(silent=True) or {}
+        action = str(payload.get("action", "")).strip()
+        ok = REGISTRY.action(agent_id, action)
+        return jsonify({"ok": ok, "agent_id": agent_id, "action": action}), (200 if ok else 400)
+
+    @app.route("/api/agents/<agent_id>/prompt")
+    def api_agent_prompt(agent_id: str):
+        return jsonify({"agent_id": agent_id, "prompt": REGISTRY.get_prompt(agent_id)})
+
+    @app.route("/api/agents/<agent_id>/answer", methods=["POST"])
+    def api_agent_answer(agent_id: str):
+        payload = request.get_json(silent=True) or {}
+        answer = str(payload.get("answer", ""))
+        ok = REGISTRY.set_answer(agent_id, answer)
+        return jsonify({"ok": ok, "agent_id": agent_id}), (200 if ok else 400)
+
+    @app.route("/api/agents/<agent_id>/job")
+    def api_agent_job(agent_id: str):
+        return jsonify({"agent_id": agent_id, "job": REGISTRY.get_job_info(agent_id)})
 
     @app.route("/questions", methods=["GET"])
     def questions_list():

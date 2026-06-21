@@ -12,13 +12,12 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
-from rich.console import Console
 from rich.table import Table
+
+from src.utils.logger import cc_print, console
 
 if TYPE_CHECKING:
     from playwright.async_api import ElementHandle, Page
-
-console = Console()
 
 
 # ---------------------------------------------------------------------------
@@ -660,7 +659,7 @@ class FormDetector:
     def _log_detected_fields(fields: list[FormField]) -> None:
         """Pretty-print the detected fields using Rich."""
         if not fields:
-            console.print("[yellow]⚠ No form fields detected on this step.[/yellow]")
+            cc_print("[yellow]⚠ No form fields detected on this step.[/yellow]")
             return
 
         table = Table(
@@ -688,4 +687,4 @@ class FormDetector:
                 options_str or "",
             )
 
-        console.print(table)
+        cc_print(table)

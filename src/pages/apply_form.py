@@ -19,7 +19,8 @@ from src.handlers.form_detector import FormDetector, FieldCategory, FormField
 from src.handlers.form_filler import FormFiller
 from src.handlers.question_matcher import QuestionMatcher
 from src.database import Database
-from src.utils.logger import logger, console
+from src.control_center import REGISTRY
+from src.utils.logger import cc_print, logger, console
 from src.utils.delay import between_actions, between_pages
 from src.utils.screenshot import capture_screenshot, capture_on_error
 
@@ -41,6 +42,7 @@ class ApplyForm:
         self.detector = FormDetector()
         self.filler = FormFiller(config, page, question_matcher, job_context)
         self.question_matcher = question_matcher
+        self.job_context = job_context or {}
         self.max_steps = 10  # Safety limit to prevent infinite loops
 
     async def complete_application(self, job_id: str = "", resume_path: str | None = None) -> bool:
@@ -62,6 +64,10 @@ class ApplyForm:
         while step < self.max_steps:
             step += 1
             logger.info(f"  Step {step}...")
+
+            if self._skip_requested():
+                logger.info("Skip requested by user; aborting current application")
+                return False
 
             # Wait for form content to load
             await self._wait_for_form_content()
@@ -98,6 +104,9 @@ class ApplyForm:
                     logger.info("Repeated form step detected after Continue; skipping refill")
                     advanced = await self._advance_form()
                     if not advanced:
+                        if await self._handle_captcha_if_present():
+                            await between_actions()
+                            continue
                         if await self._is_application_complete():
                             logger.info("âœ… Application submitted successfully!")
                             return True
@@ -107,6 +116,10 @@ class ApplyForm:
                     continue
 
                 results = await self.filler.fill_fields(fields)
+
+                if self._skip_requested():
+                    logger.info("Skip requested by user during form fill; aborting current application")
+                    return False
 
                 # Log results
                 for field, success, message in results:
@@ -123,6 +136,9 @@ class ApplyForm:
             # Try to advance to the next step
             advanced = await self._advance_form()
             if not advanced:
+                if await self._handle_captcha_if_present():
+                    await between_actions()
+                    continue
                 # Check if we're done
                 if await self._is_application_complete():
                     logger.info("✅ Application submitted successfully!")
@@ -134,6 +150,12 @@ class ApplyForm:
 
         logger.error("❌ Hit max form steps — something went wrong")
         return False
+
+    def _skip_requested(self) -> bool:
+        agent_id = str(self.job_context.get("agent_id", "")).strip()
+        if not agent_id:
+            return False
+        return REGISTRY.is_skip_requested(agent_id)
 
     @staticmethod
     def _field_signature(fields: list[FormField]) -> str:
@@ -206,15 +228,62 @@ class ApplyForm:
         if not await self._captcha_present():
             return False
 
-        console.print(
+        agent_id = str(self.job_context.get("agent_id", "")).strip()
+        if agent_id:
+            REGISTRY.set_state(agent_id, "captcha_wait")
+            REGISTRY.set_captcha_wait_count()
+            REGISTRY.set_prompt(
+                agent_id,
+                "Captcha detected in the apply form. Solve it in the browser, then type ok to continue.",
+                options=["ok"],
+            )
+            REGISTRY.append_log(agent_id, "captcha detected in apply form")
+
+        # Bring the active apply tab to front and scroll to the bottom so the
+        # captcha/submit section is visible for manual solve.
+        await self._focus_and_scroll_to_bottom_for_captcha()
+
+        cc_print(
             "\n[bold yellow]CAPTCHA detected.[/bold yellow] "
-            "Please solve it in the browser, then press Enter here."
+            "Solve it in the browser, then confirm to continue."
         )
-        await asyncio.to_thread(input)
+
+        # Auto-resume if captcha vanishes quickly on its own.
+        for _ in range(8):
+            if not await self._captcha_present():
+                if agent_id:
+                    REGISTRY.clear_prompt(agent_id)
+                break
+            await asyncio.sleep(1)
+
+        if await self._captcha_present():
+            if agent_id:
+                while True:
+                    if REGISTRY.is_stopped(agent_id):
+                        REGISTRY.clear_prompt(agent_id)
+                        REGISTRY.set_captcha_wait_count()
+                        return False
+                    if REGISTRY.is_skip_requested(agent_id):
+                        REGISTRY.clear_prompt(agent_id)
+                        REGISTRY.set_captcha_wait_count()
+                        return False
+                    answer = REGISTRY.consume_answer(agent_id)
+                    if answer is not None:
+                        REGISTRY.clear_prompt(agent_id)
+                        if answer.strip().lower() in {"__skip_job__", "skip"}:
+                            REGISTRY.set_captcha_wait_count()
+                            return False
+                        break
+                    await asyncio.sleep(0.5)
+            else:
+                await asyncio.to_thread(input, "Press Enter after solving CAPTCHA...")
 
         submit = await self._wait_for_submit_enabled(timeout=90000)
         if submit is not None:
             logger.info("CAPTCHA solved; submitting application")
+            if agent_id:
+                REGISTRY.set_state(agent_id, "applying")
+                REGISTRY.set_captcha_wait_count()
             await submit.scroll_into_view_if_needed()
             previous_step = await self._current_step_fingerprint()
             await submit.click()
@@ -222,7 +291,26 @@ class ApplyForm:
             return True
 
         logger.warning("CAPTCHA still appears unresolved; submit button was not enabled")
+        if agent_id:
+            REGISTRY.set_captcha_wait_count()
         return False
+
+    async def _focus_and_scroll_to_bottom_for_captcha(self) -> None:
+        """Focus current tab and scroll to page end for faster manual captcha solve."""
+        try:
+            await self.page.bring_to_front()
+        except Exception:
+            pass
+
+        try:
+            await self.page.evaluate(
+                """() => {
+                    window.scrollTo(0, document.body.scrollHeight);
+                }"""
+            )
+            await self.page.wait_for_timeout(250)
+        except Exception:
+            pass
 
     async def _wait_for_submit_enabled(self, timeout: int = 90000):
         """Wait for the final submit button to become clickable after CAPTCHA."""

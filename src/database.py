@@ -147,6 +147,16 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_jobs_indeed_id ON jobs(indeed_job_id);
             CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
             CREATE INDEX IF NOT EXISTS idx_screening_question ON screening_answers(question);
+
+            CREATE TABLE IF NOT EXISTS job_claims (
+                indeed_job_id   TEXT PRIMARY KEY,
+                agent_id        TEXT NOT NULL,
+                status          TEXT NOT NULL
+                                CHECK(status IN ('claimed','applied','released')),
+                claimed_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_job_claims_status ON job_claims(status);
         """)
         await self.conn.commit()
 
@@ -177,6 +187,14 @@ class Database:
         """Check if we already applied to this job."""
         cursor = await self.conn.execute(
             "SELECT 1 FROM jobs WHERE indeed_job_id = ? AND status = 'applied'",
+            (indeed_job_id,),
+        )
+        return await cursor.fetchone() is not None
+
+    async def is_already_skipped(self, indeed_job_id: str) -> bool:
+        """Check if this job was previously skipped."""
+        cursor = await self.conn.execute(
+            "SELECT 1 FROM jobs WHERE indeed_job_id = ? AND status = 'skipped'",
             (indeed_job_id,),
         )
         return await cursor.fetchone() is not None
@@ -263,6 +281,20 @@ class Database:
         )
         await self.conn.commit()
 
+    async def close_open_sessions(self) -> int:
+        """Mark any previously open sessions as ended.
+
+        Returns:
+            Number of sessions updated.
+        """
+        cursor = await self.conn.execute(
+            """UPDATE search_sessions
+               SET ended_at = CURRENT_TIMESTAMP
+               WHERE ended_at IS NULL"""
+        )
+        await self.conn.commit()
+        return cursor.rowcount or 0
+
     async def get_sessions(self, limit: int = 20) -> list[SearchSession]:
         """Fetch recent search sessions."""
         cursor = await self.conn.execute(
@@ -279,6 +311,80 @@ class Database:
             )
             for r in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Job Claims (multi-agent coordination)
+    # ------------------------------------------------------------------
+
+    async def claim_job(self, indeed_job_id: str, agent_id: str) -> bool:
+        """Atomically claim a job for an agent.
+
+        Returns True if the claim was acquired by this agent.
+        """
+        # Try insert-first for atomic ownership.
+        cursor = await self.conn.execute(
+            """INSERT OR IGNORE INTO job_claims (indeed_job_id, agent_id, status)
+               VALUES (?, ?, 'claimed')""",
+            (indeed_job_id, agent_id),
+        )
+        await self.conn.commit()
+        if cursor.rowcount and cursor.rowcount > 0:
+            return True
+
+        # If row exists and belongs to same agent, keep ownership.
+        row_cur = await self.conn.execute(
+            "SELECT agent_id, status FROM job_claims WHERE indeed_job_id = ?",
+            (indeed_job_id,),
+        )
+        row = await row_cur.fetchone()
+        if row is None:
+            return False
+        owner = row["agent_id"] if isinstance(row, aiosqlite.Row) else row[0]
+        status = row["status"] if isinstance(row, aiosqlite.Row) else row[1]
+        if owner == agent_id and status in {"claimed", "applied"}:
+            return True
+        if status == "released":
+            upd = await self.conn.execute(
+                """UPDATE job_claims
+                   SET agent_id = ?, status = 'claimed', updated_at = CURRENT_TIMESTAMP
+                   WHERE indeed_job_id = ? AND status = 'released'""",
+                (agent_id, indeed_job_id),
+            )
+            await self.conn.commit()
+            return bool(upd.rowcount)
+        return False
+
+    async def set_job_claim_status(self, indeed_job_id: str, status: str) -> None:
+        """Update claim status."""
+        await self.conn.execute(
+            """UPDATE job_claims
+               SET status = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE indeed_job_id = ?""",
+            (status, indeed_job_id),
+        )
+        await self.conn.commit()
+
+    async def release_job_claim(self, indeed_job_id: str, agent_id: str) -> None:
+        """Release claim if owned by agent."""
+        await self.conn.execute(
+            """UPDATE job_claims
+               SET status = 'released', updated_at = CURRENT_TIMESTAMP
+               WHERE indeed_job_id = ? AND agent_id = ? AND status = 'claimed'""",
+            (indeed_job_id, agent_id),
+        )
+        await self.conn.commit()
+
+    async def cleanup_stale_claims(self, max_age_minutes: int = 120) -> int:
+        """Expire old in-progress claims."""
+        cursor = await self.conn.execute(
+            """UPDATE job_claims
+               SET status = 'released', updated_at = CURRENT_TIMESTAMP
+               WHERE status = 'claimed'
+                 AND datetime(updated_at) < datetime('now', ?)""",
+            (f"-{max_age_minutes} minutes",),
+        )
+        await self.conn.commit()
+        return cursor.rowcount or 0
 
     # ------------------------------------------------------------------
     # Screening Answers

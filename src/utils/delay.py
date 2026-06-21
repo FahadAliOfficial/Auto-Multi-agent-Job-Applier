@@ -76,15 +76,13 @@ async def type_like_human(
     text: str,
     *,
     clear_first: bool = True,
-    min_keystroke_ms: float = 35.0,
-    max_keystroke_ms: float = 160.0,
+    min_keystroke_ms: float = 12.0,
+    max_keystroke_ms: float = 35.0,
 ) -> None:
     """Type *text* into the element matched by *selector* one character at a time.
 
     Each keystroke is followed by a gaussian-distributed pause that
-    mimics real human typing speed (default 35-160 ms per character).
-
-    Occasionally inserts a longer "thinking" pause to add realism.
+    mimics fast human typing speed (default 12-35 ms per character).
 
     Args:
         page: Playwright async ``Page`` object.
@@ -112,10 +110,6 @@ async def type_like_human(
         mu = (min_keystroke_ms + max_keystroke_ms) / 2.0
         sigma = (max_keystroke_ms - min_keystroke_ms) / 6.0
         delay_ms = _clipped_gauss(mu, sigma, min_keystroke_ms, max_keystroke_ms)
-
-        # Occasional longer "thinking" pause (~8 % chance)
-        if random.random() < 0.08:
-            delay_ms += _clipped_gauss(300.0, 100.0, 150.0, 600.0)
 
         await asyncio.sleep(delay_ms / 1000.0)
 

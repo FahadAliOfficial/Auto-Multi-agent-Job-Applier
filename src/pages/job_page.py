@@ -12,7 +12,8 @@ from __future__ import annotations
 import asyncio
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
-from src.utils.logger import logger, console
+from src.control_center import REGISTRY
+from src.utils.logger import cc_print, console, logger
 from src.utils.delay import between_actions
 
 
@@ -22,7 +23,7 @@ class JobPage:
     def __init__(self, page: Page):
         self.page = page
 
-    async def open(self, url: str) -> bool:
+    async def open(self, url: str, agent_id: str = "") -> bool:
         """Navigate to a job listing page.
 
         Args:
@@ -34,6 +35,11 @@ class JobPage:
         try:
             await self.page.goto(url, wait_until="domcontentloaded", timeout=20000)
             await between_actions()
+
+            if await self._captcha_present():
+                solved = await self._wait_for_captcha(agent_id)
+                if not solved:
+                    return False
 
             # Wait for the job title to appear
             await self.page.wait_for_selector(
@@ -51,6 +57,123 @@ class JobPage:
         except Exception as e:
             logger.error(f"Failed to open job page: {e}")
             return False
+
+    async def _wait_for_captcha(self, agent_id: str) -> bool:
+        """Notify user about CAPTCHA and wait until it clears."""
+        agent_id = (agent_id or "").strip()
+        if agent_id:
+            REGISTRY.set_state(agent_id, "captcha_wait")
+            REGISTRY.set_captcha_wait_count()
+            REGISTRY.set_prompt(
+                agent_id,
+                "Captcha/verification detected. Solve in the browser, then type ok to continue.",
+                options=["ok"],
+            )
+            REGISTRY.append_log(agent_id, "captcha detected; waiting for manual solve")
+        cc_print(
+            "\n[bold yellow]CAPTCHA detected.[/bold yellow] "
+            "Solve it in the browser, then confirm to continue."
+        )
+
+        # Auto-resume if captcha clears by itself; otherwise wait for manual confirmation.
+        for _ in range(8):
+            if not await self._captcha_present():
+                if agent_id:
+                    REGISTRY.clear_prompt(agent_id)
+                break
+            await asyncio.sleep(1)
+
+        if await self._captcha_present():
+            if agent_id:
+                while True:
+                    if REGISTRY.is_stopped(agent_id):
+                        REGISTRY.clear_prompt(agent_id)
+                        REGISTRY.set_captcha_wait_count()
+                        return False
+                    if REGISTRY.is_skip_requested(agent_id):
+                        REGISTRY.clear_prompt(agent_id)
+                        REGISTRY.set_captcha_wait_count()
+                        return False
+                    answer = REGISTRY.consume_answer(agent_id)
+                    if answer is not None:
+                        REGISTRY.clear_prompt(agent_id)
+                        if answer.strip().lower() in {"__skip_job__", "skip"}:
+                            REGISTRY.set_captcha_wait_count()
+                            return False
+                        break
+                    await asyncio.sleep(0.5)
+            else:
+                await asyncio.to_thread(input, "Press Enter after solving CAPTCHA...")
+
+        cleared = await self._wait_for_captcha_clear()
+        if agent_id:
+            REGISTRY.set_state(agent_id, "applying")
+            REGISTRY.set_captcha_wait_count()
+        return cleared
+
+    async def _wait_for_captcha_clear(self, timeout: int = 120) -> bool:
+        """Wait until the verification page is gone or a timeout occurs."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            if not await self._captcha_present():
+                return True
+            await asyncio.sleep(1)
+        return False
+
+    async def _captcha_present(self) -> bool:
+        """Detect Cloudflare/recaptcha verification pages."""
+        # If core job content is visible, this is not a captcha wall.
+        job_content_selectors = [
+            'h1[data-testid="jobTitle"]',
+            '.jobsearch-JobInfoHeader-title',
+            'button:has-text("Apply with Indeed")',
+            'button:has-text("Apply now")',
+            '#indeedApplyButton',
+        ]
+        for selector in job_content_selectors:
+            try:
+                el = self.page.locator(selector)
+                if await el.count() > 0 and await el.first.is_visible():
+                    return False
+            except Exception:
+                continue
+
+        text_markers = [
+            "additional verification required",
+            "checking your browser",
+            "cloudflare",
+            "verify you are human",
+            "i'm not a robot",
+            "i’m not a robot",
+        ]
+
+        try:
+            body_text = await self.page.locator("body").inner_text(timeout=2000)
+            lower_text = body_text.lower()
+            if any(marker in lower_text for marker in text_markers):
+                return True
+        except Exception:
+            pass
+
+        selectors = [
+            'iframe[src*="recaptcha"]',
+            '.g-recaptcha',
+            '[title*="reCAPTCHA"]',
+            'text="Additional Verification Required"',
+            'text="Checking your browser"',
+        ]
+
+        for selector in selectors:
+            try:
+                locator = self.page.locator(selector)
+                count = await locator.count()
+                for idx in range(count):
+                    if await locator.nth(idx).is_visible():
+                        return True
+            except Exception:
+                continue
+
+        return False
 
     async def get_title(self) -> str:
         """Extract job title."""
@@ -108,6 +231,21 @@ class JobPage:
             if await el.count() > 0:
                 text = (await el.first.inner_text()).strip()
                 if "$" in text or "year" in text.lower() or "hour" in text.lower():
+                    return text
+        return ""
+
+    async def get_job_type(self) -> str:
+        """Extract job type if displayed (full-time, contract, etc.)."""
+        selectors = [
+            '#salaryInfoAndJobType',
+            '.jobsearch-JobMetadataHeader-item',
+            '[data-testid="attribute_snippet_testid"]',
+        ]
+        for sel in selectors:
+            el = self.page.locator(sel)
+            if await el.count() > 0:
+                text = (await el.first.inner_text()).strip()
+                if any(token in text.lower() for token in ["full-time", "part-time", "contract", "temporary", "internship"]):
                     return text
         return ""
 
@@ -203,14 +341,14 @@ class JobPage:
         # Truncate description for display
         desc_preview = description[:500] + "..." if len(description) > 500 else description
 
-        console.print("\n" + "=" * 60)
-        console.print(f"[bold cyan]📌 {title}[/bold cyan]")
-        console.print(f"[bold]{company}[/bold] — {location}")
+        cc_print("\n" + "=" * 60)
+        cc_print(f"[bold cyan]📌 {title}[/bold cyan]")
+        cc_print(f"[bold]{company}[/bold] — {location}")
         if salary:
-            console.print(f"[green]💰 {salary}[/green]")
-        console.print("-" * 60)
-        console.print(f"[dim]{desc_preview}[/dim]")
-        console.print("=" * 60)
+            cc_print(f"[green]💰 {salary}[/green]")
+        cc_print("-" * 60)
+        cc_print(f"[dim]{desc_preview}[/dim]")
+        cc_print("=" * 60)
 
         return {
             "title": title,

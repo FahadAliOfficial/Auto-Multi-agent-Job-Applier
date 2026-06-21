@@ -21,7 +21,18 @@ from src.utils.logger import logger, console
 from src.utils.delay import between_actions, between_pages
 
 
-INDEED_SEARCH_URL = "https://www.indeed.com/jobs"
+# Supported Indeed country domains
+COUNTRY_DOMAINS: dict[str, str] = {
+    "us": "https://www.indeed.com",
+    "pk": "https://pk.indeed.com",
+    "uk": "https://uk.indeed.com",
+    "ca": "https://ca.indeed.com",
+    "au": "https://au.indeed.com",
+    "in": "https://www.indeed.co.in",
+    "ae": "https://www.indeed.com/jobs",  # UAE uses .com with location filter
+}
+
+DEFAULT_DOMAIN = "https://www.indeed.com"
 
 # Mapping config values to Indeed URL parameters
 JOB_TYPE_MAP = {
@@ -62,10 +73,14 @@ class JobListing:
 class SearchPage:
     """Page object for Indeed job search."""
 
-    def __init__(self, page: Page, config: dict):
+    def __init__(self, page: Page, config: dict, country: str = "us"):
         self.page = page
         self.config = config
         self.search_config = config.get("search", {})
+        base = COUNTRY_DOMAINS.get(country.lower(), DEFAULT_DOMAIN)
+        self._search_url = f"{base}/jobs"
+        self._viewjob_url = f"{base}/viewjob"
+        self._country = country.lower()
 
     def build_search_url(self, query: str, page_num: int = 0) -> str:
         """Build an Indeed search URL from the query and config filters.
@@ -88,7 +103,7 @@ class SearchPage:
             params["start"] = str(page_num * 10)
 
         # Build URL
-        url = f"{INDEED_SEARCH_URL}?{urlencode(params)}"
+        url = f"{self._search_url}?{urlencode(params)}"
 
         # Add optional filters
         job_type = self.search_config.get("job_type", "")
@@ -208,7 +223,7 @@ class SearchPage:
                 return None  # Can't track without an ID
 
             # Build full URL
-            url = f"https://www.indeed.com/viewjob?jk={job_id}"
+            url = f"{self._viewjob_url}?jk={job_id}"
 
             # --- Company Name ---
             company = ""

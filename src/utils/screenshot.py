@@ -99,7 +99,6 @@ async def capture_application_screenshot(
     """Capture an applied-job screenshot in a dated search folder."""
     today = datetime.now().strftime("%Y-%m-%d")
     folder = _SCREENSHOTS_DIR / _safe_path_part(f"{today} - {search_query}")
-    filename = _safe_path_part(f"📌 {job_title} - {company}") + ".png"
     filename = _safe_path_part(f"{chr(0x1F4CC)} {job_title} - {company}") + ".png"
     return await capture_screenshot(
         page,
