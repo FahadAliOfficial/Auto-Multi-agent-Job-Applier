@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 import asyncio
 from dataclasses import dataclass
-from urllib.parse import urlencode, quote_plus
+from urllib.parse import urlencode, quote_plus, urljoin
 from playwright.async_api import Page, Locator, TimeoutError as PlaywrightTimeout
 
 from src.database import Job
@@ -78,11 +78,17 @@ class SearchPage:
         self.config = config
         self.search_config = config.get("search", {})
         base = COUNTRY_DOMAINS.get(country.lower(), DEFAULT_DOMAIN)
+        self._base_url = base
         self._search_url = f"{base}/jobs"
         self._viewjob_url = f"{base}/viewjob"
         self._country = country.lower()
 
-    def build_search_url(self, query: str, page_num: int = 0) -> str:
+    def build_search_url(
+        self,
+        query: str,
+        page_num: int = 0,
+        include_easy_apply_filter: bool = True,
+    ) -> str:
         """Build an Indeed search URL from the query and config filters.
 
         Args:
@@ -92,11 +98,18 @@ class SearchPage:
         Returns:
             Full Indeed search URL with all filters applied
         """
+        location = str(self.search_config.get("location", ""))
         params = {
             "q": query,
-            "l": self.search_config.get("location", ""),
-            "radius": str(self.search_config.get("radius", 25)),
+            "l": location,
         }
+
+        # A distance from the literal location "remote" is undefined and can
+        # make regional Indeed sites return an empty result set. Indeed's own
+        # desktop search omits radius for this location.
+        radius = self.search_config.get("radius", 25)
+        if radius and location.strip().casefold() != "remote":
+            params["radius"] = str(radius)
 
         # Page offset (Indeed uses &start=10, 20, 30...)
         if page_num > 0:
@@ -123,9 +136,15 @@ class SearchPage:
         if salary_min and salary_min > 0:
             url += f"&salary={salary_min}"
 
-        # Easy Apply filter
-        if self.search_config.get("easy_apply_only", True):
-            url += "&sc=0kf%3Aattr(DSQF7)%3B"  # Indeed's "Easily apply" filter param
+        # Easy Apply filter — only add if company_site_apply is NOT enabled.
+        # When company_site_apply is enabled, we intentionally drop the filter so
+        # that both Easy Apply and company-site jobs appear in results.
+        csa_enabled = self.config.get("company_site_apply", {}).get("enabled", False)
+        easy_apply_only = self.search_config.get("easy_apply_only", True)
+        if easy_apply_only and not csa_enabled and include_easy_apply_filter:
+            # iafilter is Indeed Apply. DSQF7 is the remote-work facet and must
+            # not be used here, especially when location is already "remote".
+            url += "&iafilter=1"
 
         return url
 
@@ -152,8 +171,35 @@ class SearchPage:
                 timeout=10000,
             )
         except PlaywrightTimeout:
-            logger.warning("No job listings found on page — may be empty or blocked")
-            return []
+            if "iafilter=1" not in url:
+                logger.warning("No job listings found on page — may be empty or blocked")
+                return []
+
+            # Some regional Indeed sites return an empty SERP for iafilter even
+            # though the equivalent unfiltered desktop search has listings.
+            # Retry once, then verify each candidate on its detail page.
+            fallback_url = self.build_search_url(
+                query,
+                page_num,
+                include_easy_apply_filter=False,
+            )
+            logger.warning(
+                "No results with Indeed Apply filter; retrying the broader search"
+            )
+            await self.page.goto(
+                fallback_url,
+                wait_until="domcontentloaded",
+                timeout=20000,
+            )
+            await between_pages()
+            try:
+                await self.page.wait_for_selector(
+                    '.job_seen_beacon, .jobsearch-ResultsList > li, [data-testid="jobListing"]',
+                    timeout=10000,
+                )
+            except PlaywrightTimeout:
+                logger.warning("No job listings found on broader search")
+                return []
 
         return await self._parse_listings()
 
@@ -222,8 +268,10 @@ class SearchPage:
             if not job_id:
                 return None  # Can't track without an ID
 
-            # Build full URL
-            url = f"{self._viewjob_url}?jk={job_id}"
+            # Keep Indeed's real result-card URL when available. These links can
+            # include routing/session context that a fabricated /viewjob URL lacks.
+            # A direct viewjob URL remains the fallback for cards without hrefs.
+            url = self.resolve_job_url(href, job_id)
 
             # --- Company Name ---
             company = ""
@@ -273,9 +321,11 @@ class SearchPage:
             )
             if await easy_apply_el.count() > 0:
                 is_easy_apply = True
-            elif self.search_config.get("easy_apply_only", True):
+            elif self.search_config.get("easy_apply_only", True) and not self.config.get(
+                "company_site_apply", {}
+            ).get("enabled", False):
                 # Indeed often hides the badge text on result cards even when the
-                # DSQF7 filter is active. Treat these as candidates and verify the
+                # Indeed Apply filter is active. Treat these as candidates and verify the
                 # real Apply with Indeed button on the detail page before applying.
                 is_easy_apply = True
 
@@ -299,6 +349,13 @@ class SearchPage:
         except Exception as e:
             logger.debug(f"Error parsing job card: {e}")
             return None
+
+    def resolve_job_url(self, href: str, job_id: str) -> str:
+        """Resolve a result-card href, falling back to a direct viewjob URL."""
+        href = (href or "").strip()
+        if href and not href.lower().startswith(("javascript:", "#")):
+            return urljoin(f"{self._base_url}/", href)
+        return f"{self._viewjob_url}?jk={job_id}"
 
     async def has_next_page(self) -> bool:
         """Check if there's a 'Next' pagination link."""

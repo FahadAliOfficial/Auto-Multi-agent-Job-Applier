@@ -64,7 +64,7 @@ async def capture_screenshot(
     context: str = "",
     directory: str | Path | None = None,
     filename: str | None = None,
-) -> Path:
+) -> Path | None:
     """Capture a full-page screenshot and save it to disk.
 
     Args:
@@ -85,7 +85,19 @@ async def capture_screenshot(
     else:
         filepath = _timestamped_path(name, context)
 
-    await page.screenshot(path=str(filepath), full_page=True)
+    try:
+        await page.screenshot(path=str(filepath), full_page=True)
+    except Exception as exc:
+        # Screenshots are diagnostic only. In extension mode the user may not
+        # have granted optional capture access; that must never abort a form
+        # flow or recursively crash error handling.
+        logger.warning("Screenshot skipped: %s", exc)
+        try:
+            if filepath.exists() and filepath.stat().st_size == 0:
+                filepath.unlink()
+        except OSError:
+            pass
+        return None
     logger.info("📸 Screenshot saved → %s", filepath)
     return filepath
 
@@ -95,7 +107,7 @@ async def capture_application_screenshot(
     search_query: str,
     job_title: str,
     company: str,
-) -> Path:
+) -> Path | None:
     """Capture an applied-job screenshot in a dated search folder."""
     today = datetime.now().strftime("%Y-%m-%d")
     folder = _SCREENSHOTS_DIR / _safe_path_part(f"{today} - {search_query}")
@@ -112,7 +124,7 @@ async def capture_on_error(
     page,  # playwright.async_api.Page
     error: Exception,
     job_title: str = "",
-) -> Path:
+) -> Path | None:
     """Capture a screenshot when an error occurs and log the details.
 
     Args:

@@ -20,20 +20,75 @@ personal:
   website: "https://www.fahaddali.me/"
 
 # --- Resume Configuration ---
-# Place your resume PDFs in config/resumes/
-# The bot picks the best match based on job title keywords.
+# Role-specific resumes live in data/resume/.
+# The bot scores every matching profile by priority, then keyword specificity.
 resume:
-  default_path: "config/resumes/Fahad Ali - Resume.pdf"
+  default_path: "data/resume/Fahad_Ali_Software_Engineer.pdf"
   profiles:
-    - name: "general"
-      path: "config/resumes/Fahad Ali - Resume.pdf"
-      keywords: []  # Matches any job when no other profile fits
-    - name: "technical"
-      path: "config/resumes/technical.pdf"
-      keywords: ["software", "developer", "engineer", "programming", "devops", "backend", "frontend", "fullstack", "data"]
-    # - name: "leadership"
-    #   path: "config/resumes/leadership.pdf"
-    #   keywords: ["manager", "lead", "director", "head of", "vp", "principal", "senior"]
+    - name: "ai_automation_engineer"
+      path: "data/resume/Fahad_Ali_AI_Automation_Engineer.pdf"
+      priority: 100
+      keywords:
+        - "ai automation"
+        - "automation engineer"
+        - "agentic ai"
+        - "generative ai"
+        - "ai engineer"
+        - "artificial intelligence"
+        - "machine learning"
+        - "llm"
+    - name: "senior_mern_engineer"
+      path: "data/resume/Fahad_Ali_Senior_MERN_Engineer.pdf"
+      priority: 95
+      keywords: ["senior mern", "lead mern", "staff mern", "principal mern"]
+    - name: "senior_full_stack_engineer"
+      path: "data/resume/Fahad_Ali_Senior_Full_Stack_Engineer.pdf"
+      priority: 90
+      keywords:
+        - "senior full stack"
+        - "lead full stack"
+        - "staff full stack"
+        - "principal full stack"
+    - name: "mern_full_stack_engineer"
+      path: "data/resume/Fahad_Ali_MERN_Full_Stack_Engineer.pdf"
+      priority: 85
+      keywords: ["mern", "mongodb express react node"]
+    - name: "backend_engineer"
+      path: "data/resume/Fahad_Ali_Backend_Engineer.pdf"
+      priority: 80
+      keywords:
+        - "backend"
+        - "back end"
+        - "python developer"
+        - "python engineer"
+        - "api engineer"
+        - "server side"
+        - "django"
+        - "fastapi"
+    - name: "full_stack_engineer"
+      path: "data/resume/Fahad_Ali_Full_Stack_Engineer.pdf"
+      priority: 70
+      keywords:
+        - "full stack"
+        - "fullstack"
+        - "frontend"
+        - "front end"
+        - "react developer"
+        - "next.js developer"
+        - "nextjs developer"
+    - name: "senior_software_engineer"
+      path: "data/resume/Fahad_Ali_Senior_Software_Engineer.pdf"
+      priority: 60
+      keywords:
+        - "senior software"
+        - "sr software"
+        - "staff software"
+        - "lead software"
+        - "principal software"
+    - name: "software_engineer"
+      path: "data/resume/Fahad_Ali_Software_Engineer.pdf"
+      priority: 10
+      keywords: ["software engineer", "software developer", "developer", "engineer"]
 
 # --- Resume Maker ---
 # Controls resume maker behavior when you use the web UI.
@@ -86,9 +141,10 @@ search:
   salary_min: 0
 
   # Date posted: "1" (24h), "3" (3 days), "7" (7 days), "14" (14 days), or "" for any time
-  date_posted: "1"
+  date_posted: "7"
 
-  # Only apply to "Easy Apply" jobs (recommended: true)
+  # Only apply to "Easy Apply" jobs.
+  # Set to false (or enable company_site_apply below) to also see company-site jobs.
   easy_apply_only: true
 
   # Maximum number of pages to scan per search query
@@ -111,7 +167,7 @@ bot:
     # Supported: us, pk, uk, ca, au, in
     # us = indeed.com | pk = pk.indeed.com | uk = uk.indeed.com
     countries:
-      - us
+      # - us
       - pk
       - uk
       - ca
@@ -141,10 +197,24 @@ bot:
 
   # Browser settings
   browser:
+    # "legacy" launches the existing Playwright-managed browser profile.
+    # "extension" uses a dedicated tab in your normal Chrome window through
+    # the unpacked extension in extension/chrome. Legacy remains the default.
+    mode: "extension"
     headless: false  # Set to true for background operation (higher detection risk)
     slow_mo: 0       # Milliseconds to slow down each Playwright action
     viewport_width: 1366
     viewport_height: 768
+    extension:
+      host: "127.0.0.1"
+      port: 8765
+      connect_timeout_seconds: 45
+      command_timeout_seconds: 30
+      start_url: "https://www.indeed.com/"
+      reuse_dedicated_tab: true
+      close_tab_on_exit: false
+      fast_form_mode: true       # Skip Playwright-style long waits in extension mode
+      token_env: "INDEED_EXTENSION_TOKEN"
 
 # --- Keywords to Skip ---
 # Jobs containing these keywords in title/description will be skipped
@@ -157,5 +227,22 @@ skip_keywords:
 skip_companies: []
 
 
+# --- Company Site Apply ---
+# When enabled the bot will also try to apply on the employer's own website
+# for jobs that do NOT have an Indeed Easy Apply button.
+# Enabling this automatically disables the easy_apply_only URL filter so both
+# job types appear in search results.
+company_site_apply:
+  enabled: false              # Set to true to activate
+  max_wait_seconds: 15        # Max seconds to wait for external pages to load
+  skip_if_login_required: true  # Skip jobs that require account creation
+  save_email_leads: true      # Persist email-only jobs to data/manual_apply_needed.csv
+
+
 preferences:
   education: "Bachelor's Degree"
+# --- Company Site Apply ---
+# When enabled the bot will also try to apply on the employer's own website
+# for jobs that do NOT have an Indeed Easy Apply button.
+# Enabling this automatically disables the easy_apply_only URL filter so both
+# job types appear in search results.

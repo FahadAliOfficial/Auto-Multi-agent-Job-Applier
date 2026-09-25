@@ -115,7 +115,12 @@ class Database:
                 url             TEXT NOT NULL,
                 description     TEXT DEFAULT '',
                 status          TEXT DEFAULT 'found'
-                                    CHECK(status IN ('found','applied','skipped','failed')),
+                                    CHECK(status IN (
+                                        'found', 'applied', 'skipped', 'failed',
+                                        'external_applied', 'manual_needed'
+                                    )),
+                apply_type      TEXT DEFAULT 'easy_apply'
+                                    CHECK(apply_type IN ('easy_apply', 'company_site')),
                 found_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 applied_at      TIMESTAMP,
                 notes           TEXT DEFAULT ''
@@ -157,8 +162,31 @@ class Database:
                 updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_job_claims_status ON job_claims(status);
+
+            CREATE TABLE IF NOT EXISTS manual_apply_leads (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                indeed_job_id       TEXT NOT NULL,
+                job_title           TEXT DEFAULT '',
+                company             TEXT DEFAULT '',
+                location            TEXT DEFAULT '',
+                job_url             TEXT DEFAULT '',
+                apply_email         TEXT DEFAULT '',
+                reason              TEXT DEFAULT '',
+                description_preview TEXT DEFAULT '',
+                found_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_manual_leads_job_id ON manual_apply_leads(indeed_job_id);
         """)
         await self.conn.commit()
+
+        # Migrate existing DB: add apply_type column if missing (for existing installs)
+        try:
+            await self.conn.execute(
+                "ALTER TABLE jobs ADD COLUMN apply_type TEXT DEFAULT 'easy_apply'"
+            )
+            await self.conn.commit()
+        except Exception:
+            pass  # Column already exists
 
     # ------------------------------------------------------------------
     # Jobs CRUD
@@ -184,9 +212,9 @@ class Database:
         return await cursor.fetchone() is not None
 
     async def is_already_applied(self, indeed_job_id: str) -> bool:
-        """Check if we already applied to this job."""
+        """Check if we already applied to this job (Easy Apply or external)."""
         cursor = await self.conn.execute(
-            "SELECT 1 FROM jobs WHERE indeed_job_id = ? AND status = 'applied'",
+            "SELECT 1 FROM jobs WHERE indeed_job_id = ? AND status IN ('applied', 'external_applied')",
             (indeed_job_id,),
         )
         return await cursor.fetchone() is not None
@@ -194,7 +222,7 @@ class Database:
     async def is_already_skipped(self, indeed_job_id: str) -> bool:
         """Check if this job was previously skipped."""
         cursor = await self.conn.execute(
-            "SELECT 1 FROM jobs WHERE indeed_job_id = ? AND status = 'skipped'",
+            "SELECT 1 FROM jobs WHERE indeed_job_id = ? AND status IN ('skipped', 'manual_needed')",
             (indeed_job_id,),
         )
         return await cursor.fetchone() is not None
@@ -465,17 +493,75 @@ class Database:
         return None, best_ratio
 
     # ------------------------------------------------------------------
+    # Manual Apply Leads
+    # ------------------------------------------------------------------
+
+    async def save_manual_lead(
+        self,
+        indeed_job_id: str,
+        job_title: str,
+        company: str,
+        location: str,
+        job_url: str,
+        apply_email: str = "",
+        reason: str = "",
+        description_preview: str = "",
+    ) -> int:
+        """Save a job that needs manual follow-up (email-only or account required).
+
+        Returns the new row ID.
+        """
+        cursor = await self.conn.execute(
+            """INSERT INTO manual_apply_leads
+               (indeed_job_id, job_title, company, location, job_url,
+                apply_email, reason, description_preview)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                indeed_job_id, job_title, company, location, job_url,
+                apply_email, reason, description_preview[:500],
+            ),
+        )
+        await self.conn.commit()
+        return cursor.lastrowid or 0
+
+    async def get_manual_leads(self, limit: int = 100) -> list[dict]:
+        """Fetch saved manual apply leads (most recent first)."""
+        cursor = await self.conn.execute(
+            """SELECT * FROM manual_apply_leads
+               ORDER BY found_at DESC LIMIT ?""",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": r["id"],
+                "indeed_job_id": r["indeed_job_id"],
+                "job_title": r["job_title"],
+                "company": r["company"],
+                "location": r["location"],
+                "job_url": r["job_url"],
+                "apply_email": r["apply_email"],
+                "reason": r["reason"],
+                "description_preview": r["description_preview"],
+                "found_at": r["found_at"],
+            }
+            for r in rows
+        ]
+
+    # ------------------------------------------------------------------
     # Stats
     # ------------------------------------------------------------------
 
     async def get_stats(self) -> dict:
         """Get aggregate statistics for the dashboard."""
         stats = {}
-        for status in ("found", "applied", "skipped", "failed"):
+        for status in ("found", "applied", "skipped", "failed", "external_applied", "manual_needed"):
             stats[status] = await self.count_jobs(status)
         stats["total"] = sum(stats.values())
+        total_applied = stats["applied"] + stats["external_applied"]
+        total_failed = stats["failed"]
         stats["success_rate"] = (
-            round(stats["applied"] / max(stats["applied"] + stats["failed"], 1) * 100, 1)
+            round(total_applied / max(total_applied + total_failed, 1) * 100, 1)
         )
         return stats
 

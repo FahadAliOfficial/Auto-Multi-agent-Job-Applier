@@ -70,6 +70,8 @@ class AgentOrchestrator:
             REGISTRY.set_state(cfg.agent_id, "idle")
             REGISTRY.append_log(cfg.agent_id, f"started with {len(cfg.queries)} query(s)")
             job_page = JobPage(page)
+            if self.bot.browser_manager and self.bot.browser_manager.context:
+                job_page.set_context(self.bot.browser_manager.context)
             max_pages = self.bot.config.get("search", {}).get("max_pages", 5)
 
             orch_cfg = self.bot.config.get("bot", {}).get("orchestrator", {}) or {}

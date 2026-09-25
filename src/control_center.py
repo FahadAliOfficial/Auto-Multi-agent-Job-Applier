@@ -180,15 +180,27 @@ class ControlCenterRegistry:
             elif action == "focus_tab":
                 agent.focus_tab = True
             elif action == "continue":
-                if agent.pending_prompt is None:
-                    return False
-                agent.pending_answer = "ok"
+                # "Continue" also resumes a paused agent. When a prompt is
+                # pending, choose its affirmative option instead of sending a
+                # hard-coded value that many prompts reject.
+                agent.paused = False
+                if agent.pending_prompt is not None:
+                    options = [str(value) for value in agent.pending_prompt.get("options", [])]
+                    preferred = ("y", "yes", "ok", "continue", "apply anyway", "apply")
+                    normalized = {value.strip().lower(): value for value in options}
+                    agent.pending_answer = next(
+                        (normalized[value] for value in preferred if value in normalized),
+                        options[0] if options else "ok",
+                    )
             elif action == "skip":
                 agent.skip_current = True
                 if agent.pending_prompt is not None:
                     agent.pending_answer = "__SKIP_JOB__"
             else:
                 return False
+            agent.heartbeat = datetime.utcnow().isoformat()
+            stamp = datetime.now().strftime("%H:%M:%S")
+            agent.logs.append(f"[{stamp}] control action accepted: {action}")
             return True
 
     async def wait_if_paused(self, agent_id: str) -> bool:

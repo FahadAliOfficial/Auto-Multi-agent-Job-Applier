@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
-from src.handlers.form_detector import FormDetector, FieldCategory, FormField
+from src.handlers.form_detector import FormDetector, FieldCategory, FieldType, FormField
 from src.handlers.form_filler import FormFiller
 from src.handlers.question_matcher import QuestionMatcher
 from src.database import Database
@@ -44,6 +44,12 @@ class ApplyForm:
         self.question_matcher = question_matcher
         self.job_context = job_context or {}
         self.max_steps = 10  # Safety limit to prevent infinite loops
+        browser_cfg = config.get("bot", {}).get("browser", {})
+        extension_cfg = browser_cfg.get("extension", {}) or {}
+        self.fast_extension_forms = (
+            browser_cfg.get("mode") == "extension"
+            and bool(extension_cfg.get("fast_form_mode", True))
+        )
 
     async def complete_application(self, job_id: str = "", resume_path: str | None = None) -> bool:
         """Complete the entire Easy Apply form flow.
@@ -60,17 +66,35 @@ class ApplyForm:
         logger.info("📝 Starting application form...")
 
         step = 0
+        loading_retries = 0
         last_filled_signature = ""
         while step < self.max_steps:
             step += 1
             logger.info(f"  Step {step}...")
 
-            if self._skip_requested():
-                logger.info("Skip requested by user; aborting current application")
+            if not await self._control_allows_continue():
                 return False
 
             # Wait for form content to load
-            await self._wait_for_form_content()
+            if not await self._wait_for_form_content():
+                if loading_retries < 1:
+                    loading_retries += 1
+                    step -= 1
+                    logger.warning(
+                        "Apply form is still loading; waiting once more before asking"
+                    )
+                    continue
+                if await self._prompt_stalled_form():
+                    loading_retries = 0
+                    step -= 1
+                    continue
+                logger.info("Application form was skipped after it failed to become ready")
+                self.job_context["stalled_form_skipped"] = True
+                return False
+            loading_retries = 0
+
+            if not await self._control_allows_continue():
+                return False
 
             # Check if we've reached the success page
             if await self._is_application_complete():
@@ -83,20 +107,36 @@ class ApplyForm:
                 logger.error(f"❌ Form error: {error}")
                 return False
 
+            resume_handled = False
             if resume_path and await self._looks_like_resume_step():
                 if not await self.handle_resume_step(resume_path):
                     return False
+                resume_handled = True
 
             if await self._skip_optional_profile_detail_step():
-                await between_actions()
+                await self._pause_between_actions()
                 continue
 
             if await self._handle_captcha_if_present():
-                await between_actions()
+                await self._pause_between_actions()
+                continue
+
+            requirements_action = await self._handle_employer_requirements_warning()
+            if requirements_action is not None:
+                if not requirements_action:
+                    return False
+                await self._pause_between_actions()
                 continue
 
             # Detect and fill form fields on this step
             fields = await self.detector.detect_fields(self.page)
+            if resume_handled:
+                # handle_resume_step already populated this control. Re-uploading
+                # can restart Indeed's asynchronous resume processing.
+                fields = [
+                    field for field in fields
+                    if field.field_type != FieldType.FILE_UPLOAD
+                ]
             if fields:
                 logger.info(f"  Found {len(fields)} fields to fill")
                 field_signature = self._field_signature(fields)
@@ -105,14 +145,14 @@ class ApplyForm:
                     advanced = await self._advance_form()
                     if not advanced:
                         if await self._handle_captcha_if_present():
-                            await between_actions()
+                            await self._pause_between_actions()
                             continue
                         if await self._is_application_complete():
                             logger.info("âœ… Application submitted successfully!")
                             return True
                         logger.warning("Could not advance repeated form step")
                         break
-                    await between_actions()
+                    await self._pause_between_actions()
                     continue
 
                 results = await self.filler.fill_fields(fields)
@@ -137,7 +177,7 @@ class ApplyForm:
             advanced = await self._advance_form()
             if not advanced:
                 if await self._handle_captcha_if_present():
-                    await between_actions()
+                    await self._pause_between_actions()
                     continue
                 # Check if we're done
                 if await self._is_application_complete():
@@ -146,7 +186,7 @@ class ApplyForm:
                 logger.warning("Could not advance form — may be stuck")
                 break
 
-            await between_actions()
+            await self._pause_between_actions()
 
         logger.error("❌ Hit max form steps — something went wrong")
         return False
@@ -156,6 +196,102 @@ class ApplyForm:
         if not agent_id:
             return False
         return REGISTRY.is_skip_requested(agent_id)
+
+    async def _control_allows_continue(self) -> bool:
+        """Honor dashboard controls while an application form is active."""
+        agent_id = str(self.job_context.get("agent_id", "")).strip()
+        if not agent_id:
+            return True
+        if REGISTRY.is_stopped(agent_id):
+            logger.info("Stop requested by user; aborting current application")
+            return False
+        if REGISTRY.consume_focus_flag(agent_id):
+            try:
+                await self.page.bring_to_front()
+                REGISTRY.append_log(agent_id, "brought browser tab to front")
+            except Exception as exc:
+                REGISTRY.append_log(agent_id, f"focus failed: {exc}")
+        if not await REGISTRY.wait_if_paused(agent_id):
+            logger.info("Stopped while application was paused")
+            return False
+        if self._skip_requested():
+            logger.info("Skip requested by user; aborting current application")
+            return False
+        return True
+
+    async def _pause_between_actions(self) -> None:
+        """Use a short deterministic pause for the extension's direct DOM bridge."""
+        if self.fast_extension_forms:
+            await self.page.wait_for_timeout(250)
+            return
+        await between_actions()
+
+    async def _handle_employer_requirements_warning(self) -> bool | None:
+        """Ask before proceeding past Indeed's unmet-requirements warning.
+
+        Returns None when this is not the warning page, True after the user
+        chooses Apply anyway, and False when they choose to stop.
+        """
+        try:
+            body_text = await self.page.locator("body").inner_text(timeout=3000)
+        except Exception:
+            return None
+
+        normalized = re.sub(r"\s+", " ", body_text).strip()
+        if not re.search(
+            r"(?:don.t|do not) meet (?:these|the) employer requirements",
+            normalized,
+            re.IGNORECASE,
+        ):
+            return None
+
+        requirement = ""
+        for line in body_text.splitlines():
+            line = re.sub(r"\s+", " ", line).strip()
+            if re.search(r"\(required\)|\brequired\b", line, re.IGNORECASE):
+                requirement = line
+                break
+
+        question = (
+            "Indeed says your answers may not meet the employer's requirements."
+            + (f"\n\nRequirement: {requirement}" if requirement else "")
+            + "\n\nDo you want to apply anyway?"
+        )
+        agent_id = str(self.job_context.get("agent_id", "")).strip() or None
+        answer = await self.question_matcher.prompt_user(
+            question,
+            options=["Apply anyway", "Return to job search"],
+            agent_id=agent_id,
+        )
+        choice = re.sub(r"\s+", " ", answer or "").strip().lower()
+        if choice not in {"apply anyway", "apply", "yes", "y", "1"}:
+            logger.info("User declined to apply after the employer-requirements warning")
+            self.job_context["requirements_declined"] = True
+            return False
+
+        apply_anyway = re.compile(r"^apply anyway$", re.IGNORECASE)
+        locators = [
+            self.page.get_by_role("link", name=apply_anyway),
+            self.page.get_by_role("button", name=apply_anyway),
+            self.page.get_by_text(apply_anyway, exact=True),
+        ]
+        previous_step = await self._current_step_fingerprint()
+        for locator in locators:
+            try:
+                count = await locator.count()
+                for idx in range(count):
+                    candidate = locator.nth(idx)
+                    if await candidate.is_visible() and await candidate.is_enabled():
+                        logger.info("User confirmed employer-requirements warning; applying anyway")
+                        await candidate.scroll_into_view_if_needed()
+                        await candidate.click()
+                        await self._wait_after_navigation_click("Apply anyway", previous_step)
+                        return True
+            except Exception:
+                continue
+
+        logger.warning("Apply anyway was selected, but its link was not clickable")
+        return False
 
     @staticmethod
     def _field_signature(fields: list[FormField]) -> str:
@@ -355,8 +491,14 @@ class ApplyForm:
 
         return False
 
-    async def _wait_for_form_content(self, timeout: int = 10000) -> None:
-        """Wait for form content to be visible."""
+    async def _wait_for_form_content(self, timeout: int = 20000) -> bool:
+        """Wait until the apply step has usable fields or navigation controls."""
+        # Extension mode has a native 100 ms polling trigger across every
+        # permitted frame. Use it immediately: waiting for a container first
+        # adds up to five seconds even when fields are already interactive.
+        if self.fast_extension_forms:
+            return await self._wait_for_step_ready(timeout=timeout)
+
         try:
             # Indeed's apply modal/iframe typically has these containers
             form_selectors = [
@@ -369,28 +511,31 @@ class ApplyForm:
                 'iframe[title*="Apply"]',
             ]
 
-            # Try each selector
-            for sel in form_selectors:
-                try:
-                    await self.page.wait_for_selector(sel, timeout=3000)
-                    await self._wait_for_step_ready()
-                    return
-                except PlaywrightTimeout:
-                    continue
+            # One combined wait avoids paying a separate timeout for every
+            # selector, which is especially costly across extension frames.
+            try:
+                await self.page.wait_for_selector(
+                    ", ".join(form_selectors),
+                    timeout=min(timeout, 5000),
+                )
+                return await self._wait_for_step_ready(timeout=timeout)
+            except Exception:
+                pass
 
             # Check if we're in an iframe
             iframe = self.page.frame_locator('iframe[title*="Apply"], iframe[id*="indeedapply"]')
             try:
                 await iframe.locator('input, select, textarea, button').first.wait_for(timeout=5000)
-                await self._wait_for_step_ready()
+                return await self._wait_for_step_ready(timeout=timeout)
             except Exception:
                 pass
 
         except Exception:
             # Give the page a moment
             await asyncio.sleep(2)
+        return False
 
-    async def _wait_for_step_ready(self, timeout: int = 20000) -> None:
+    async def _wait_for_step_ready(self, timeout: int = 20000) -> bool:
         """Wait until the apply step has controls or recognizable content."""
         try:
             await self.page.wait_for_function(
@@ -412,6 +557,12 @@ class ApplyForm:
                     if (/add a resume|upload a resume|build an indeed resume/.test(text)) {
                         return true;
                     }
+                    if (/(?:don.t|do not) meet (?:these|the) employer requirements/.test(text)) {
+                        return true;
+                    }
+                    if ([...document.querySelectorAll('iframe')].some((el) =>
+                        visible(el) && /apply/i.test(el.title || el.id || el.name || '')
+                    )) return true;
 
                     const fields = [...document.querySelectorAll(
                         'input:not([type="hidden"]), select, textarea'
@@ -419,7 +570,7 @@ class ApplyForm:
                     if (fields.length > 0) return true;
 
                     const actions = [...document.querySelectorAll(
-                        'button, [role="button"], input[type="submit"], input[type="button"]'
+                        'button, a, [role="button"], input[type="submit"], input[type="button"]'
                     )].filter((el) => {
                         if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true') {
                             return false;
@@ -436,8 +587,29 @@ class ApplyForm:
                 """,
                 timeout=timeout,
             )
+            return True
         except PlaywrightTimeout:
             logger.warning("Timed out waiting for apply form content to finish loading")
+            return False
+
+    async def _prompt_stalled_form(self) -> bool:
+        """Ask whether to keep waiting when Indeed leaves the form on a spinner."""
+        if str(self.job_context.get("mode", "")).lower() != "semi":
+            return False
+        agent_id = str(self.job_context.get("agent_id", "")).strip() or None
+        answer = await self.question_matcher.prompt_user(
+            "Indeed's application form is still loading and has no usable fields yet. "
+            "Keep the application open and wait again?",
+            options=["Retry", "Skip job"],
+            agent_id=agent_id,
+        )
+        return re.sub(r"\s+", " ", answer or "").strip().lower() in {
+            "retry",
+            "continue",
+            "wait",
+            "yes",
+            "y",
+        }
 
     async def _advance_form(self) -> bool:
         """Click the Continue/Next/Submit button to advance to the next step.
@@ -587,6 +759,12 @@ class ApplyForm:
         previous_step: str = "",
     ) -> None:
         """Wait briefly after Continue/Review/Submit actions."""
+        if self.fast_extension_forms:
+            await self.page.wait_for_timeout(
+                750 if re.search(r"\bsubmit\b", button_text or "", re.IGNORECASE) else 400
+            )
+            return
+
         if re.search(r"\bsubmit\b", button_text or "", re.IGNORECASE):
             try:
                 await self.page.wait_for_load_state("domcontentloaded", timeout=5000)
@@ -679,7 +857,7 @@ class ApplyForm:
         if await file_input.count() > 0:
             await file_input.first.set_input_files(str(path))
             logger.info(f"📎 Uploaded resume: {path.name}")
-            await between_actions()
+            await self._pause_between_actions()
             return True
 
         upload_option = self.page.get_by_text(re.compile(r"upload a resume", re.IGNORECASE)).first
@@ -691,7 +869,7 @@ class ApplyForm:
                 chooser = await chooser_info.value
                 await chooser.set_files(str(path))
                 logger.info(f"Uploaded resume: {path.name}")
-                await between_actions()
+                await self._pause_between_actions()
                 return True
         except PlaywrightTimeout:
             logger.debug("Upload resume click did not open a file chooser; checking for file input")
@@ -702,7 +880,7 @@ class ApplyForm:
         if await file_input.count() > 0:
             await file_input.first.set_input_files(str(path))
             logger.info(f"Uploaded resume: {path.name}")
-            await between_actions()
+            await self._pause_between_actions()
             return True
 
         # Check for "Use my Indeed resume" option

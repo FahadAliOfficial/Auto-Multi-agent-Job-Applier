@@ -11,8 +11,10 @@ Handles:
 from __future__ import annotations
 
 import asyncio
+from urllib.parse import urlparse
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
+from src.control_center import REGISTRY
 from src.utils.logger import logger, console
 from src.utils.delay import between_actions, type_like_human
 
@@ -58,7 +60,7 @@ class LoginPage:
             logger.warning(f"Could not check login status: {e}")
             return False
 
-    async def login(self, email: str, password: str = "") -> bool:
+    async def login(self, email: str, password: str = "", agent_id: str = "") -> bool:
         """Log in to Indeed.
 
         If password is empty, opens login page and waits for manual login.
@@ -80,11 +82,11 @@ class LoginPage:
 
         if not password:
             # Manual login mode — recommended
-            return await self._manual_login(email)
+            return await self._manual_login(email, agent_id=agent_id)
         else:
-            return await self._auto_login(email, password)
+            return await self._auto_login(email, password, agent_id=agent_id)
 
-    async def _manual_login(self, email: str) -> bool:
+    async def _manual_login(self, email: str, agent_id: str = "") -> bool:
         """Wait for the user to manually complete login.
 
         Pre-fills the email field, then waits for the user to complete
@@ -110,10 +112,15 @@ class LoginPage:
             pass
 
         # Wait for the user to complete login (up to 5 minutes)
+        if agent_id:
+            console.print(
+                "[bold cyan]After login, click Continue for this agent in the "
+                "Control Center to resume immediately.[/bold cyan]"
+            )
         console.print("[dim]Waiting for you to complete login (5 min timeout)...[/dim]")
-        return await self._wait_for_login_complete(timeout_seconds=300)
+        return await self._wait_for_login_complete(300, agent_id=agent_id)
 
-    async def _auto_login(self, email: str, password: str) -> bool:
+    async def _auto_login(self, email: str, password: str, agent_id: str = "") -> bool:
         """Attempt automatic login with email and password.
 
         Falls back to manual login if CAPTCHA or other challenges appear.
@@ -149,50 +156,123 @@ class LoginPage:
                 await sign_in_btn.first.click()
 
             # Wait for login to complete
-            return await self._wait_for_login_complete(timeout_seconds=60)
+            return await self._wait_for_login_complete(60, agent_id=agent_id)
 
         except (PlaywrightTimeout, Exception) as e:
             logger.warning(f"Auto-login encountered issue: {e}")
             console.print(
                 "[yellow]Auto-login needs help. Please complete login manually.[/yellow]"
             )
-            return await self._wait_for_login_complete(timeout_seconds=300)
+            return await self._wait_for_login_complete(300, agent_id=agent_id)
 
-    async def _wait_for_login_complete(self, timeout_seconds: int = 300) -> bool:
-        """Poll until the user is logged in or timeout is reached."""
+    @staticmethod
+    def _can_manually_resume(url: str) -> bool:
+        """Return True when the tab has left Indeed authentication screens."""
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname or ""
+            location = f"{parsed.path}?{parsed.query}".lower()
+        except Exception:
+            return False
+        if host != "indeed.com" and not host.endswith(".indeed.com"):
+            return False
+        blocked = ("login", "signin", "auth", "challenge", "captcha", "verify")
+        return not any(marker in location for marker in blocked)
+
+    async def _wait_for_login_complete(
+        self,
+        timeout_seconds: int = 300,
+        agent_id: str = "",
+    ) -> bool:
+        """Poll until login is detected or the user manually resumes it."""
         start = asyncio.get_event_loop().time()
+        if agent_id:
+            REGISTRY.set_state(agent_id, "login_wait")
+            REGISTRY.set_prompt(
+                agent_id,
+                "Complete the Indeed login/CAPTCHA in the automation tab, then click Continue.",
+                options=["Continue", "Cancel"],
+            )
+            REGISTRY.append_log(agent_id, "waiting for manual Indeed login")
 
-        while (asyncio.get_event_loop().time() - start) < timeout_seconds:
-            current_url = self.page.url
-
-            # Successfully landed on homepage or job search
-            if any(
-                indicator in current_url
-                for indicator in [
-                    "indeed.com/?",
-                    "indeed.com/jobs",
-                    "indeed.com/my",
-                    "indeed.com/#",
-                ]
-            ) or current_url.rstrip("/") == "https://www.indeed.com":
-                # Double-check with page content
+        try:
+            while (asyncio.get_event_loop().time() - start) < timeout_seconds:
+                # Extension pages cache their URL until a bridge operation
+                # completes. This lightweight query refreshes it after manual
+                # redirects without adding a fixed page-load delay.
                 try:
-                    account_menu = self.page.locator(
-                        '[data-gnav-element-name="AccountMenu"], #AccountMenu, '
-                        '#userOptionsLabel'
-                    )
-                    if await account_menu.count() > 0:
-                        logger.info("✅ Login successful!")
-                        return True
+                    await self.page.locator("body").count()
                 except Exception:
                     pass
+                current_url = self.page.url
 
-                # Even without the menu, if we're on the homepage, likely logged in
-                if "secure.indeed.com" not in current_url:
-                    logger.info("✅ Login appears successful (on homepage)")
-                    return True
+                if any(
+                    indicator in current_url
+                    for indicator in [
+                        "indeed.com/?",
+                        "indeed.com/jobs",
+                        "indeed.com/my",
+                        "indeed.com/#",
+                    ]
+                ) or current_url.rstrip("/") == "https://www.indeed.com":
+                    try:
+                        account_menu = self.page.locator(
+                            '[data-gnav-element-name="AccountMenu"], #AccountMenu, '
+                            '#userOptionsLabel'
+                        )
+                        if await account_menu.count() > 0:
+                            logger.info("Login successful")
+                            if agent_id:
+                                REGISTRY.append_log(agent_id, "login detected automatically")
+                            return True
+                    except Exception:
+                        pass
 
-            await asyncio.sleep(2)
+                    if "secure.indeed.com" not in current_url:
+                        logger.info("Login appears successful (on homepage)")
+                        if agent_id:
+                            REGISTRY.append_log(agent_id, "login detected automatically")
+                        return True
 
-        logger.error("❌ Login timed out")
-        return False
+                if agent_id:
+                    if REGISTRY.is_stopped(agent_id):
+                        logger.info("Login wait stopped from Control Center")
+                        return False
+
+                    if REGISTRY.consume_focus_flag(agent_id):
+                        try:
+                            await self.page.bring_to_front()
+                            REGISTRY.append_log(agent_id, "brought login tab to front")
+                        except Exception as exc:
+                            REGISTRY.append_log(agent_id, f"focus failed during login: {exc}")
+
+                    answer = REGISTRY.consume_answer(agent_id)
+                    normalized = (answer or "").strip().lower()
+                    if normalized in {"cancel", "__skip_job__"}:
+                        logger.info("Login cancelled from Control Center")
+                        REGISTRY.append_log(agent_id, "login cancelled")
+                        return False
+                    if normalized in {"continue", "resume", "done", "ok", "yes", "y"}:
+                        if self._can_manually_resume(current_url):
+                            logger.info("Login manually confirmed from Control Center")
+                            REGISTRY.append_log(agent_id, "login manually confirmed; resuming bot")
+                            return True
+                        REGISTRY.append_log(
+                            agent_id,
+                            "Continue ignored: finish login and leave the login/verification page first",
+                        )
+                        REGISTRY.set_prompt(
+                            agent_id,
+                            "Login is still open. Finish login/CAPTCHA, then click Continue again.",
+                            options=["Continue", "Cancel"],
+                        )
+
+                await asyncio.sleep(1)
+
+            logger.error("Login timed out")
+            if agent_id:
+                REGISTRY.append_log(agent_id, "login timed out")
+            return False
+        finally:
+            if agent_id:
+                REGISTRY.clear_prompt(agent_id)

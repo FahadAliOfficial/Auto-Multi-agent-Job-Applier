@@ -83,14 +83,15 @@
             </div>
         </div>
         <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.75rem;">
-            <button class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','skip')">Skip Job</button>
-            <button class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','continue')">Continue</button>
-            <button class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','focus_tab')">Focus Tab</button>
-            <button class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','pause')">Pause</button>
-            <button class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','resume')">Resume</button>
-            <button class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','stop')">Stop</button>
-            <button class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','retry_last')">Retry Last</button>
+            <button type="button" class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','skip',this)">Skip Job</button>
+            <button type="button" class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','continue',this)">Continue</button>
+            <button type="button" class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','focus_tab',this)">Focus Tab</button>
+            <button type="button" class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','pause',this)">Pause</button>
+            <button type="button" class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','resume',this)">Resume</button>
+            <button type="button" class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','stop',this)">Stop</button>
+            <button type="button" class="btn-sm" onclick="agentAction('{{ agent.agent_id }}','retry_last',this)">Retry Last</button>
         </div>
+        <div id="action-status-{{ agent.agent_id }}" role="status" style="min-height:1.2rem;margin:-.35rem 0 .55rem;font-size:.75rem;color:var(--text-muted);"></div>
         <pre id="logs-{{ agent.agent_id }}" style="height:280px;overflow:auto;background:#0b1020;border:1px solid var(--border);border-radius:10px;padding:.75rem;font-size:.75rem;color:#b8c8ff;">Waiting for logs...</pre>
         <div style="margin-top:.75rem;background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px;padding:.6rem .75rem;">
             <div style="font-size:.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem;">Prompt</div>
@@ -99,6 +100,7 @@
         </div>
         <form onsubmit="sendAnswer('{{ agent.agent_id }}'); return false;" style="display:flex;gap:.4rem;margin-top:.6rem;">
             <input id="answer-{{ agent.agent_id }}" type="text" placeholder="Type answer..." style="flex:1;min-width:120px;">
+            <select id="answer-select-{{ agent.agent_id }}" style="display:none;flex:1;min-width:120px;background:var(--bg-secondary);color:white;border:1px solid var(--border);border-radius:4px;"></select>
             <button class="btn-sm" type="submit">Send</button>
         </form>
     </section>
@@ -143,7 +145,8 @@ async function refreshAgents() {
     for (const agent of (data.agents || [])) {
         const meta = document.getElementById(`meta-${agent.agent_id}`);
         if (meta) {
-            meta.textContent = `state=${agent.state || '-'} | query=${agent.query || '-'} | job=${agent.current_job || '-'}`;
+            const controlState = agent.stopped ? 'stopped' : (agent.paused ? 'paused' : 'running');
+            meta.textContent = `state=${agent.state || '-'} | control=${controlState} | query=${agent.query || '-'} | job=${agent.current_job || '-'}`;
         }
         await refreshLogs(agent.agent_id);
         await refreshPrompt(agent.agent_id);
@@ -165,7 +168,8 @@ async function refreshPrompt(agentId) {
     const promptBox = document.getElementById(`prompt-${agentId}`);
     const optionsBox = document.getElementById(`prompt-options-${agentId}`);
     const answerInput = document.getElementById(`answer-${agentId}`);
-    if (!promptBox || !answerInput || !optionsBox) return;
+    const answerSelect = document.getElementById(`answer-select-${agentId}`);
+    if (!promptBox || !answerInput || !optionsBox || !answerSelect) return;
     const res = await fetch(`/api/agents/${agentId}/prompt`);
     if (!res.ok) return;
     const data = await res.json();
@@ -175,34 +179,93 @@ async function refreshPrompt(agentId) {
         optionsBox.textContent = '';
         answerInput.disabled = true;
         answerInput.placeholder = 'Waiting for prompt...';
+        answerInput.style.display = 'block';
+        answerSelect.style.display = 'none';
         return;
     }
     promptBox.textContent = prompt.text || '';
     const options = prompt.options || [];
-    optionsBox.textContent = options.length ? `Options: ${options.join(' | ')}` : '';
-    answerInput.disabled = false;
-    answerInput.placeholder = prompt.allow_empty ? 'Type answer or leave blank...' : 'Type answer...';
+    
+    if (options.length > 0) {
+        optionsBox.textContent = ''; // Hide the options text if using a select dropdown
+        answerInput.style.display = 'none';
+        answerSelect.style.display = 'block';
+        answerSelect.disabled = false;
+        answerSelect.innerHTML = '';
+        if (prompt.allow_empty) {
+            const opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = '-- Skip (Leave Empty) --';
+            answerSelect.appendChild(opt);
+        }
+        options.forEach(o => {
+            const opt = document.createElement('option');
+            opt.value = o;
+            opt.textContent = o;
+            answerSelect.appendChild(opt);
+        });
+    } else {
+        optionsBox.textContent = '';
+        answerInput.style.display = 'block';
+        answerSelect.style.display = 'none';
+        answerInput.disabled = false;
+        answerInput.placeholder = prompt.allow_empty ? 'Type answer or leave blank...' : 'Type answer...';
+    }
 }
 
-async function agentAction(agentId, action) {
-    await fetch(`/api/agents/${agentId}/action`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({action}),
-    });
-    await refreshAgents();
+async function agentAction(agentId, action, button) {
+    const status = document.getElementById(`action-status-${agentId}`);
+    const originalText = button ? button.textContent : '';
+    if (button) {
+        button.disabled = true;
+        button.textContent = 'Sending...';
+    }
+    try {
+        const res = await fetch(`/api/agents/${agentId}/action`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({action}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+            throw new Error(data.error || `Request failed (${res.status})`);
+        }
+        if (status) {
+            status.textContent = `${action.replace('_', ' ')} accepted`;
+            status.style.color = '#65d49a';
+        }
+        await refreshAgents();
+    } catch (error) {
+        if (status) {
+            status.textContent = `Could not ${action.replace('_', ' ')}: ${error.message}`;
+            status.style.color = '#ff7b88';
+        }
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.textContent = originalText;
+        }
+    }
 }
 
 async function sendAnswer(agentId) {
     const input = document.getElementById(`answer-${agentId}`);
-    if (!input || input.disabled) return;
-    const answer = input.value || '';
+    const select = document.getElementById(`answer-select-${agentId}`);
+    if ((!input || input.disabled) && (!select || select.disabled)) return;
+    
+    let answer = '';
+    if (select && select.style.display !== 'none') {
+        answer = select.value || '';
+    } else if (input) {
+        answer = input.value || '';
+    }
+
     await fetch(`/api/agents/${agentId}/answer`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({answer}),
     });
-    input.value = '';
+    if (input) input.value = '';
     await refreshPrompt(agentId);
 }
 

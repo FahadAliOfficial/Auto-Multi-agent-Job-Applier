@@ -23,6 +23,23 @@ from playwright.async_api import (
 )
 
 
+def create_browser_manager(config: dict | None = None):
+    """Build the configured browser backend while preserving legacy defaults."""
+    config = config or {}
+    mode = str(
+        config.get("bot", {}).get("browser", {}).get("mode", "legacy")
+    ).strip().lower()
+    if mode == "legacy":
+        return BrowserManager(config)
+    if mode == "extension":
+        from src.extension_browser import ExtensionBrowserManager
+
+        return ExtensionBrowserManager(config)
+    raise ValueError(
+        f"Unsupported bot.browser.mode {mode!r}; expected 'legacy' or 'extension'"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Default browser settings
 # ---------------------------------------------------------------------------

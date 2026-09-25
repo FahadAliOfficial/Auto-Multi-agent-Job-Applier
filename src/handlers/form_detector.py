@@ -30,6 +30,7 @@ class FieldType(Enum):
     TEXT_INPUT = auto()
     TEXTAREA = auto()
     SELECT = auto()
+    COMBOBOX = auto()
     RADIO = auto()
     CHECKBOX = auto()
     FILE_UPLOAD = auto()
@@ -63,6 +64,7 @@ class FieldCategory(Enum):
     WILLING_TO_RELOCATE = auto()
     LINKEDIN = auto()
     WEBSITE = auto()
+    COUNTRY = auto()
     SCREENING_QUESTION = auto()
     UNKNOWN = auto()
 
@@ -111,6 +113,7 @@ _CATEGORY_PATTERNS: list[tuple[re.Pattern[str], FieldCategory]] = [
     (re.compile(r"\b(zip\s*code|postal\s*code|zip)\b", re.IGNORECASE), FieldCategory.ZIP_CODE),
     (re.compile(r"\b(address|street)\b", re.IGNORECASE), FieldCategory.ADDRESS),
     (re.compile(r"\b(location|where\s*are\s*you)\b", re.IGNORECASE), FieldCategory.LOCATION),
+    (re.compile(r"\b(country)\b", re.IGNORECASE), FieldCategory.COUNTRY),
 ]
 
 
@@ -173,7 +176,9 @@ class FormDetector:
             label_text = await self._extract_label(page, el)
             placeholder = await el.get_attribute("placeholder") or ""
             combined_label = label_text or placeholder
-            required = await self._is_required(el)
+            if self._is_progress_control_label(combined_label, field_type):
+                continue
+            required = await self._is_required(el, combined_label)
             selector = await self._build_selector(el)
             if not selector:
                 continue
@@ -201,7 +206,7 @@ class FormDetector:
             label_text = await self._extract_label(page, el)
             placeholder = await el.get_attribute("placeholder") or ""
             combined_label = label_text or placeholder
-            required = await self._is_required(el)
+            required = await self._is_required(el, combined_label)
             selector = await self._build_selector(el)
             if not selector:
                 continue
@@ -225,7 +230,7 @@ class FormDetector:
                 continue
 
             label_text = await self._extract_label(page, el)
-            required = await self._is_required(el)
+            required = await self._is_required(el, label_text)
             selector = await self._build_selector(el)
             if not selector:
                 continue
@@ -241,6 +246,45 @@ class FormDetector:
                     required=required,
                     options=options,
                     current_value=current_value,
+                )
+            )
+
+        # --- custom ARIA dropdowns -------------------------------------------
+        # Current Indeed forms render many required dropdowns as buttons/divs
+        # backed by listboxes rather than native <select> elements.
+        custom_comboboxes = await page.query_selector_all(
+            '[role="combobox"]:not(select), '
+            'button[aria-haspopup="listbox"], '
+            '[role="button"][aria-haspopup="listbox"]'
+        )
+        for el in custom_comboboxes:
+            if await self._should_skip_element(el):
+                continue
+            label_text = await self._extract_label(page, el)
+            placeholder = (
+                await el.get_attribute("placeholder")
+                or await el.get_attribute("aria-placeholder")
+                or ""
+            )
+            combined_label = label_text or placeholder
+            selector = await self._build_selector(el)
+            if not selector:
+                continue
+            options = await self._extract_combobox_options(page, el)
+            try:
+                current_value = (await el.inner_text()).strip()
+            except Exception:
+                current_value = ""
+            fields.append(
+                FormField(
+                    field_type=FieldType.COMBOBOX,
+                    category=self._classify_field(combined_label, FieldType.COMBOBOX),
+                    label=combined_label,
+                    selector=selector,
+                    required=await self._is_required(el, combined_label),
+                    options=options,
+                    current_value=current_value,
+                    placeholder=placeholder,
                 )
             )
 
@@ -358,7 +402,9 @@ class FormDetector:
         # 2. aria-label
         aria_label = await element.get_attribute("aria-label")
         if aria_label:
-            return aria_label.strip()
+            cleaned = aria_label.strip()
+            if cleaned.lower() not in ("attach", "upload", "choose file", "browse"):
+                return cleaned
 
         # 3. aria-labelledby
         labelledby = await element.get_attribute("aria-labelledby")
@@ -398,6 +444,25 @@ class FormDetector:
             if cleaned:
                 return cleaned
 
+        # 5b. Wrapper label (useful for Greenhouse file uploads)
+        wrapper_label = await element.evaluate(
+            """el => {
+                let node = el.parentElement;
+                for (let i = 0; i < 5 && node; i++) {
+                    const labelNode = node.querySelector('label, [class*="label"], [class*="question"]');
+                    if (labelNode && labelNode.innerText) {
+                        return labelNode.innerText;
+                    }
+                    node = node.parentElement;
+                }
+                return '';
+            }"""
+        )
+        if wrapper_label:
+            cleaned = wrapper_label.split('\n')[0].replace('*', '').strip()
+            if cleaned and cleaned.lower() not in ("attach", "upload", "choose file", "browse"):
+                return cleaned
+
         # 6. Name attribute as last resort
         name = await element.get_attribute("name")
         if name:
@@ -408,18 +473,35 @@ class FormDetector:
         return ""
 
     @staticmethod
-    async def _is_required(element: ElementHandle) -> bool:
+    async def _is_required(element: ElementHandle, label_text: str = "") -> bool:
         """Check whether the element is marked as required."""
         if await element.get_attribute("required") is not None:
             return True
-        aria = await element.get_attribute("aria-required")
-        return aria == "true"
+        aria_required = await element.get_attribute("aria-required")
+        if aria_required and aria_required.lower() == "true":
+            return True
+        if "*" in label_text:
+            return True
+        return False
 
     async def _build_selector(self, element: ElementHandle) -> str:
         """Build a stable Playwright selector string for *element*.
 
-        Prefers ``data-testid``, then ``id``, then a generated CSS path.
+        Prefers ``data-testid``, then ``data-qa``, then ``id``. If none exist, injects ``data-bot-field-id``.
         """
+        test_id = await element.get_attribute("data-testid")
+        if test_id:
+            return f'[data-testid={FormDetector._css_string(test_id)}]'
+
+        qa_id = await element.get_attribute("data-qa")
+        if qa_id:
+            return f'[data-qa={FormDetector._css_string(qa_id)}]'
+
+        el_id = await element.get_attribute("id")
+        if el_id:
+            return f'[id={FormDetector._css_string(el_id)}]'
+
+        # Fallback: inject a custom attribute
         self._field_seq += 1
         bot_id = f"field-{self._field_seq}"
         try:
@@ -431,15 +513,7 @@ class FormDetector:
         except Exception:
             pass
 
-        test_id = await element.get_attribute("data-testid")
-        if test_id:
-            return f'[data-testid={FormDetector._css_string(test_id)}]'
-
-        el_id = await element.get_attribute("id")
-        if el_id:
-            return f'[id={FormDetector._css_string(el_id)}]'
-
-        # Fallback: build a CSS selector with tag + name + type
+        # Absolute fallback: build a CSS selector with tag + name + type
         tag = await element.evaluate("el => el.tagName.toLowerCase()")
         name = await element.get_attribute("name")
         input_type = await element.get_attribute("type")
@@ -473,12 +547,40 @@ class FormDetector:
         """Skip hidden/browser-managed fields that users should not fill."""
         if await FormDetector._is_recaptcha_element(element):
             return True
+        progress_attrs = " ".join(
+            [
+                await element.get_attribute("id") or "",
+                await element.get_attribute("name") or "",
+                await element.get_attribute("aria-label") or "",
+                await element.get_attribute("data-testid") or "",
+                await element.get_attribute("role") or "",
+            ]
+        ).lower()
+        if (
+            "current page" in progress_attrs
+            or "pagination" in progress_attrs
+            or "progress" in progress_attrs
+        ):
+            return True
         if (await element.get_attribute("aria-hidden") or "").lower() == "true":
             return True
         try:
             return not await element.is_visible()
         except Exception:
             return False
+
+    @staticmethod
+    def _is_progress_control_label(label: str, field_type: FieldType) -> bool:
+        """Reject accessibility controls that describe form-step progress."""
+        if field_type != FieldType.NUMBER:
+            return False
+        normalized = re.sub(r"\s+", " ", (label or "").strip().lower())
+        return bool(
+            re.fullmatch(
+                r"(?:current\s+)?(?:page|step)(?:\s+(?:number|progress))?",
+                normalized,
+            )
+        )
 
     @staticmethod
     async def _extract_select_options(element: ElementHandle) -> list[str]:
@@ -488,6 +590,37 @@ class FormDetector:
                 .map(o => o.textContent.trim())
                 .filter(t => t.length > 0)"""
         )
+
+    @staticmethod
+    async def _extract_combobox_options(page: Page, element: ElementHandle) -> list[str]:
+        """Open an ARIA combobox briefly and collect its visible choices."""
+        options: list[str] = []
+        try:
+            await element.click()
+            await page.wait_for_timeout(150)
+            candidates = await page.query_selector_all(
+                '[role="option"], [role="listbox"] li, [data-testid*="option"]'
+            )
+            for candidate in candidates:
+                try:
+                    if not await candidate.is_visible():
+                        continue
+                    text = re.sub(r"\s+", " ", (await candidate.inner_text()).strip())
+                    if text and text.lower() not in {"select an option", "choose an option"}:
+                        options.append(text)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        finally:
+            try:
+                await element.press("Escape")
+            except Exception:
+                try:
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+        return list(dict.fromkeys(options))
 
     async def _detect_radio_groups(self, page: Page) -> list[FormField]:
         """Detect radio-button groups and return one :class:`FormField` per group."""
@@ -513,7 +646,7 @@ class FormDetector:
 
             # The group label is often a nearby heading or fieldset legend
             group_label = await self._find_group_label(page, el)
-            required = await self._is_required(el)
+            required = await self._is_required(el, group_label)
             selector = f'input[name={self._css_string(name)}]'
 
             fields.append(
@@ -551,7 +684,7 @@ class FormDetector:
                     option_labels.append(lbl)
 
             group_label = await self._find_group_label(page, el)
-            required = await self._is_required(el)
+            required = await self._is_required(el, group_label)
             selector = f'input[name={self._css_string(name)}]'
 
             fields.append(

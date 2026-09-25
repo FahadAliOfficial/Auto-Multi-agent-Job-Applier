@@ -96,6 +96,7 @@ class FormFiller:
             FieldCategory.ZIP_CODE: personal.get("zip_code"),
             FieldCategory.LINKEDIN: personal.get("linkedin"),
             FieldCategory.WEBSITE: personal.get("website"),
+            FieldCategory.COUNTRY: personal.get("country"),
             FieldCategory.YEARS_EXPERIENCE: preferences.get("years_experience"),
             FieldCategory.EDUCATION: preferences.get("education"),
             FieldCategory.SALARY_EXPECTATION: preferences.get("salary_expectation"),
@@ -164,7 +165,11 @@ class FormFiller:
             or (
                 field.category == FieldCategory.UNKNOWN
                 and field.options
-                and field.field_type in {FieldType.CHECKBOX, FieldType.SELECT}
+                and field.field_type in {
+                    FieldType.CHECKBOX,
+                    FieldType.SELECT,
+                    FieldType.COMBOBOX,
+                }
             )
         ):
             return await self._fill_screening_question(field)
@@ -205,7 +210,11 @@ class FormFiller:
                 if field.field_type == FieldType.PHONE:
                     await self._select_phone_country(value)
                     value = self._normalize_phone_for_input(value)
-                return await self._fill_text(field, value)
+                elif field.category == FieldCategory.COUNTRY:
+                    label_lower = (field.label or "").lower()
+                    if "code" in label_lower or "dial" in label_lower:
+                        value = self._map_country_to_code(value)
+                result = await self._fill_text(field, value)
             case FieldType.TEXTAREA:
                 if await self._text_field_already_filled(field):
                     logger.info(
@@ -213,15 +222,15 @@ class FormFiller:
                         field.label,
                     )
                     return (field, True, "Already filled by Indeed – skipped")
-                return await self._fill_text(field, value)
-            case FieldType.SELECT:
+                result = await self._fill_text(field, value)
+            case FieldType.SELECT | FieldType.COMBOBOX:
                 if await self._select_field_already_filled(field):
                     logger.info(
                         "[dim]⏭ SKIPPED (pre-filled)[/dim]  %s",
                         field.label,
                     )
                     return (field, True, "Already filled by Indeed – skipped")
-                return await self._fill_select(field, value)
+                result = await self._fill_select(field, value)
             case FieldType.RADIO:
                 if await self._radio_already_checked(field):
                     logger.info(
@@ -229,7 +238,7 @@ class FormFiller:
                         field.label,
                     )
                     return (field, True, "Already filled by Indeed – skipped")
-                return await self._fill_radio(field, value)
+                result = await self._fill_radio(field, value)
             case FieldType.CHECKBOX:
                 if await self._checkbox_already_checked(field):
                     logger.info(
@@ -237,7 +246,7 @@ class FormFiller:
                         field.label,
                     )
                     return (field, True, "Already filled by Indeed – skipped")
-                return await self._fill_checkbox(field, value)
+                result = await self._fill_checkbox(field, value)
             case _:
                 msg = f"Unsupported field type: {field.field_type.name}"
                 logger.warning(
@@ -245,7 +254,13 @@ class FormFiller:
                     field.label,
                     msg,
                 )
-                return (field, False, msg)
+                result = (field, False, msg)
+
+        if not result[1] and field.required:
+            logger.info("Programmatic fill failed for '%s', falling back to user prompt", field.label)
+            return await self._fill_screening_question(field)
+            
+        return result
 
     # ------------------------------------------------------------------
     # Pre-fill detection helpers
@@ -273,6 +288,20 @@ class FormFiller:
             return False
         try:
             locator = self._page.locator(field.selector).first
+            if field.field_type == FieldType.COMBOBOX:
+                selected_text = (
+                    await locator.get_attribute("aria-valuetext")
+                    or await locator.inner_text()
+                    or ""
+                ).strip()
+                return bool(
+                    selected_text
+                    and not re.match(
+                        r"^(select|choose|please select|please choose)\b",
+                        selected_text,
+                        re.IGNORECASE,
+                    )
+                )
             selected_value: str = await locator.input_value(timeout=3000)
             if not selected_value or not selected_value.strip():
                 return False
@@ -336,6 +365,15 @@ class FormFiller:
         error = await self._type_field(field, value)
         if error:
             return (field, False, error)
+            
+        # Verify it actually stuck (company sites sometimes wipe inputs if validation fails)
+        try:
+            current_value = await self._page.locator(field.selector).first.input_value(timeout=1000)
+            if not current_value.strip():
+                return (field, False, "Field remains empty after typing (React/Vue issue?)")
+        except Exception:
+            pass
+
         logger.info(
             "[success]✓ TYPED[/success]  %s: %r",
             field.label,
@@ -384,6 +422,31 @@ class FormFiller:
         if match:
             stripped = match.group(1)
         return re.sub(r"\D+", "", stripped) or value
+
+    @staticmethod
+    def _map_country_to_code(country: str) -> str:
+        """Map a country name to its 2-letter ISO code."""
+        if not country:
+            return ""
+        mapping = {
+            "pakistan": "PK",
+            "united states": "US",
+            "usa": "US",
+            "united kingdom": "GB",
+            "uk": "GB",
+            "india": "IN",
+            "canada": "CA",
+            "australia": "AU",
+            "germany": "DE",
+            "france": "FR",
+            "united arab emirates": "AE",
+            "uae": "AE",
+            "spain": "ES",
+            "italy": "IT",
+            "netherlands": "NL",
+            "brazil": "BR",
+        }
+        return mapping.get(country.strip().lower(), country.strip())
 
     async def _select_phone_country(self, phone: str) -> None:
         """Best-effort selection for Indeed's split country-code phone widget."""
@@ -473,12 +536,18 @@ class FormFiller:
         Tries exact match first, then case-insensitive substring match,
         then falls back to the first non-empty option.
         """
-        locator = self._page.locator(field.selector)
+        selected = await self._choose_select_option(field, value)
 
-        # Try exact match
-        selected = await self._try_select_option(locator, value, field.options)
+        if not selected and field.category == FieldCategory.COUNTRY:
+            iso_code = self._map_country_to_code(value)
+            if iso_code != value:
+                selected = await self._choose_select_option(field, iso_code)
 
         if selected:
+            # Verify the select isn't pointing to a placeholder
+            if not await self._select_field_already_filled(field):
+                return (field, False, "Select field reverted to empty/placeholder after selection")
+
             logger.info(
                 "[success]✓ SELECTED[/success]  %s: %r",
                 field.label,
@@ -486,19 +555,9 @@ class FormFiller:
             )
             return (field, True, f"Selected: {selected}")
 
-        # Fallback: first non-empty option
-        fallback = next((o for o in field.options if o), None)
-        if fallback:
-            await locator.select_option(label=fallback, timeout=5000)
-            logger.warning(
-                "[warning]⚠ FALLBACK[/warning]  %s: no match for %r, used %r",
-                field.label,
-                value,
-                fallback,
-            )
-            return (field, True, f"Fallback selected: {fallback}")
-
-        return (field, False, "No options available in select")
+        # We no longer fallback to an arbitrary option. If we can't select,
+        # we return False so the caller can fallback to prompting the user.
+        return (field, False, "No matching select option found")
 
     async def _fill_radio(self, field: FormField, value: str) -> FillResult:
         """Click the radio button whose label best matches *value*."""
@@ -576,7 +635,7 @@ class FormFiller:
             logger.error("[error]✗ MISSING FILE[/error]  %s: %s", field.label, msg)
             return (field, False, msg)
 
-        locator = self._page.locator(field.selector)
+        locator = self._page.locator(field.selector).first
         await locator.set_input_files(str(file_path))
         logger.info(
             "[success]✓ UPLOADED[/success]  %s: %s",
@@ -596,12 +655,10 @@ class FormFiller:
         options = field.options if field.options else None
         question_key = self._question_key_for_field(field)
 
-        if field.field_type == FieldType.SELECT and field.options:
+        if field.field_type in {FieldType.SELECT, FieldType.COMBOBOX} and field.options:
             auto_select_answer = self._auto_answer_select_by_options(field.options)
             if auto_select_answer:
-                selected = await self._try_select_option(
-                    self._page.locator(field.selector), auto_select_answer, field.options
-                )
+                selected = await self._choose_select_option(field, auto_select_answer)
                 if selected:
                     logger.info(
                         "[success]AUTO-ANSWER[/success]  %r -> %r (select options)",
@@ -633,10 +690,8 @@ class FormFiller:
                 error = await self._type_field(field, answer)
                 if error:
                     return (field, False, error)
-            case FieldType.SELECT:
-                selected = await self._try_select_option(
-                    self._page.locator(field.selector), answer, field.options
-                )
+            case FieldType.SELECT | FieldType.COMBOBOX:
+                selected = await self._choose_select_option(field, answer)
                 if not selected:
                     return (field, False, f"No matching select option for {answer!r}")
             case FieldType.RADIO:
@@ -678,10 +733,8 @@ class FormFiller:
             return (field, False, "Skip requested by user")
 
         match field.field_type:
-            case FieldType.SELECT:
-                selected = await self._try_select_option(
-                    self._page.locator(field.selector), answer, field.options
-                )
+            case FieldType.SELECT | FieldType.COMBOBOX:
+                selected = await self._choose_select_option(field, answer)
                 if not selected:
                     return (field, False, f"No matching select option for {answer!r}")
             case FieldType.RADIO:
@@ -850,7 +903,7 @@ class FormFiller:
     def _question_key_for_field(self, field: FormField) -> str:
         """Build a cache key; include select-option context for ambiguous labels."""
         base = field.label or ""
-        if field.field_type != FieldType.SELECT or not field.options:
+        if field.field_type not in {FieldType.SELECT, FieldType.COMBOBOX} or not field.options:
             return base
         signature = self._options_signature(field.options)
         return f"{base} [options:{signature}]"
@@ -933,7 +986,7 @@ class FormFiller:
 
         # Selects are often required even when the required marker is not detected.
         # For known decision categories, prompt anyway when we have selectable options.
-        if field.field_type == FieldType.SELECT and field.options:
+        if field.field_type in {FieldType.SELECT, FieldType.COMBOBOX} and field.options:
             has_real_options = any(
                 not re.fullmatch(r"\s*select\s+(an\s+)?option\s*", opt.strip(), re.IGNORECASE)
                 for opt in field.options
@@ -955,6 +1008,7 @@ class FormFiller:
             FieldType.NUMBER,
             FieldType.DATE,
             FieldType.SELECT,
+            FieldType.COMBOBOX,
         }
         return fillable_type and (field.required or question_like)
 
@@ -995,6 +1049,48 @@ class FormFiller:
                 await locator.select_option(label=opt, timeout=5000)
                 return opt
 
+        return None
+
+    async def _choose_select_option(self, field: FormField, value: str) -> str | None:
+        """Choose a value in either a native select or an ARIA combobox."""
+        if field.field_type == FieldType.COMBOBOX:
+            return await self._try_combobox_option(field, value)
+        return await self._try_select_option(
+            self._page.locator(field.selector).first,
+            value,
+            field.options,
+        )
+
+    async def _try_combobox_option(self, field: FormField, value: str) -> str | None:
+        """Open a custom listbox and click its best matching visible option."""
+        best = self._best_option_match(value, field.options) or value.strip()
+        if not best:
+            return None
+
+        trigger = self._page.locator(field.selector).first
+        await trigger.click()
+        await self._page.wait_for_timeout(100)
+        exact = re.compile(rf"^{re.escape(best)}$", re.IGNORECASE)
+        candidates = [
+            self._page.get_by_role("option", name=exact),
+            self._page.locator('[role="option"]').filter(has_text=exact),
+            self._page.get_by_text(exact, exact=True),
+        ]
+        for candidate in candidates:
+            try:
+                count = await candidate.count()
+                for index in range(count):
+                    option = candidate.nth(index)
+                    if await option.is_visible() and await option.is_enabled():
+                        await option.click()
+                        await self._page.wait_for_timeout(150)
+                        return best
+            except Exception:
+                continue
+        try:
+            await trigger.press("Escape")
+        except Exception:
+            pass
         return None
 
     @staticmethod

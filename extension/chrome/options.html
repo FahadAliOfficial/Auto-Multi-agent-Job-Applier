@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Indeed Auto Applier Bridge</title>
+  <style>
+    body{font:15px system-ui;margin:32px;max-width:680px;color:#202124}
+    label{display:block;font-weight:600;margin-top:18px}
+    input[type=text],input[type=password]{box-sizing:border-box;width:100%;padding:9px;margin-top:6px}
+    button{margin-top:20px;padding:9px 18px}
+    #status{margin-top:16px}.ok{color:#137333}.error{color:#b3261e}
+    code{background:#f1f3f4;padding:2px 5px}
+  </style>
+</head>
+<body>
+  <h1>Indeed Auto Applier Bridge</h1>
+  <p>The bridge connects only to your local computer. Start the Python bot, then
+    paste the token stored in <code>data/extension_pairing_token</code>.</p>
+  <label>WebSocket URL<input id="url" type="text" value="ws://127.0.0.1:8765"></label>
+  <label>Pairing token<input id="token" type="password" autocomplete="off"></label>
+  <label><input id="companySites" type="checkbox"> Allow company-site applications</label>
+  <p>This optional Chrome permission allows dedicated automation tabs on sites
+    outside Indeed. Leave it off when using Indeed Easy Apply only.</p>
+  <label><input id="screenshots" type="checkbox"> Allow screenshots</label>
+  <p>Screenshots capture only the visible area of the dedicated automation tab.
+    Chrome requires optional all-sites access for this API. The setting and
+    permission remain enabled until you uncheck both optional features.</p>
+  <button id="save">Save and connect</button>
+  <div id="status" role="status"></div>
+  <script src="options.js"></script>
+</body>
+</html>

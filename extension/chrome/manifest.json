@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Indeed Auto Applier Bridge",
+  "version": "1.0.7",
+  "description": "Connects the local Indeed auto applier to dedicated tabs in this Chrome profile.",
+  "permissions": ["alarms", "storage", "tabs", "scripting"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "*://*.indeed.com/*",
+    "*://*.indeed.co.uk/*",
+    "*://*.indeed.ca/*",
+    "*://*.indeed.com.au/*",
+    "*://*.indeed.co.in/*",
+    "*://*.indeed.ae/*"
+  ],
+  "optional_host_permissions": ["<all_urls>"],
+  "background": {"service_worker": "background.js"},
+  "options_page": "options.html",
+  "action": {"default_title": "Indeed Auto Applier Bridge"}
+}

@@ -94,17 +94,19 @@ async def type_like_human(
     """
     logger.debug("Typing %d chars into '%s'", len(text), selector)
 
+    locator = page.locator(selector).first
+
     # Click the element first to ensure focus
-    await page.click(selector)
+    await locator.click()
     await random_delay(0.1, 0.3)
 
     if clear_first:
-        await page.press(selector, "Control+A")
-        await page.press(selector, "Backspace")
+        await locator.press("Control+A")
+        await locator.press("Backspace")
         await random_delay(0.05, 0.15)
 
     for i, char in enumerate(text):
-        await page.press(selector, char)
+        await locator.press(char)
 
         # Base inter-keystroke delay
         mu = (min_keystroke_ms + max_keystroke_ms) / 2.0
