@@ -69,6 +69,27 @@ python -m src.main login
 
 This opens Indeed in the browser. Log in manually (handle CAPTCHA/2FA yourself). The session is saved for future runs.
 
+### Use your normal Chrome profile (optional)
+
+The original Playwright-managed browser remains the default. To use a dedicated
+tab in your everyday Chrome profile instead:
+
+1. Set `bot.browser.mode: "extension"` in `config/config.yaml`.
+2. Start the bot once so it creates `data/extension_pairing_token`.
+3. Open `chrome://extensions`, enable Developer mode, select **Load unpacked**,
+   and choose `extension/chrome`.
+4. Open the extension Options, paste the pairing token, and save.
+
+The local bridge binds only to `127.0.0.1`. Indeed access is granted by default;
+company-site access and screenshots are separate, explicit Chrome permissions.
+Return `bot.browser.mode` to `"legacy"` at any time to use the original flow.
+
+Run the safe local-only integration check with:
+
+```bash
+python scripts/smoke_test_extension.py
+```
+
 ### 4. Run
 
 ```bash
@@ -94,6 +115,33 @@ python -m src.main run
 | `python -m src.main search -q "Data Engineer"` | Search with custom query |
 | `python -m src.main status` | Show application statistics |
 | `python -m src.main dashboard` | Launch web dashboard |
+| `python -m src.main resume-maker` | Launch standalone AI resume maker |
+
+## Resume Maker (Standalone)
+
+Launch:
+
+```bash
+python -m src.main resume-maker --host 127.0.0.1 --port 5050
+```
+
+Open:
+
+```
+http://127.0.0.1:5050
+```
+
+Set your API key before launch:
+
+```bash
+$env:OPENAI_API_KEY="your_key_here"
+```
+
+The app:
+- loads/saves a structured master resume at `config/resume_master.json`
+- tailors it against a pasted job description
+- shows changes + estimated token usage
+- exports tailored files to `data/resume_outputs/`
 
 ## Project Structure
 

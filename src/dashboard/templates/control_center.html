@@ -181,6 +181,7 @@ async function refreshPrompt(agentId) {
         answerInput.placeholder = 'Waiting for prompt...';
         answerInput.style.display = 'block';
         answerSelect.style.display = 'none';
+        answerSelect.dataset.promptKey = '';
         return;
     }
     promptBox.textContent = prompt.text || '';
@@ -191,19 +192,23 @@ async function refreshPrompt(agentId) {
         answerInput.style.display = 'none';
         answerSelect.style.display = 'block';
         answerSelect.disabled = false;
-        answerSelect.innerHTML = '';
-        if (prompt.allow_empty) {
-            const opt = document.createElement('option');
-            opt.value = '';
-            opt.textContent = '-- Skip (Leave Empty) --';
-            answerSelect.appendChild(opt);
+        const promptKey = `${prompt.created_at || ''}|${prompt.text || ''}|${JSON.stringify(options)}`;
+        if (answerSelect.dataset.promptKey !== promptKey) {
+            answerSelect.innerHTML = '';
+            if (prompt.allow_empty) {
+                const opt = document.createElement('option');
+                opt.value = '';
+                opt.textContent = '-- Skip (Leave Empty) --';
+                answerSelect.appendChild(opt);
+            }
+            options.forEach(o => {
+                const opt = document.createElement('option');
+                opt.value = o;
+                opt.textContent = o;
+                answerSelect.appendChild(opt);
+            });
+            answerSelect.dataset.promptKey = promptKey;
         }
-        options.forEach(o => {
-            const opt = document.createElement('option');
-            opt.value = o;
-            opt.textContent = o;
-            answerSelect.appendChild(opt);
-        });
     } else {
         optionsBox.textContent = '';
         answerInput.style.display = 'block';

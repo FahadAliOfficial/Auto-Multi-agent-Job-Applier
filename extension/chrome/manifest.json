@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Indeed Auto Applier Bridge",
-  "version": "1.0.7",
+  "version": "1.0.13",
   "description": "Connects the local Indeed auto applier to dedicated tabs in this Chrome profile.",
   "permissions": ["alarms", "storage", "tabs", "scripting"],
   "host_permissions": [

@@ -646,6 +646,21 @@ class FormFiller:
 
     async def _fill_screening_question(self, field: FormField) -> FillResult:
         """Handle a screening question via the QuestionMatcher."""
+        # A user may have completed this field during a manual-intervention
+        # pause. Preserve that work when the bot re-reads the same step.
+        if field.field_type in {
+            FieldType.TEXT_INPUT,
+            FieldType.TEXTAREA,
+            FieldType.NUMBER,
+        } and await self._text_field_already_filled(field):
+            return (field, True, "Already filled manually - skipped")
+        if field.field_type in {FieldType.SELECT, FieldType.COMBOBOX} and await self._select_field_already_filled(field):
+            return (field, True, "Already selected manually - skipped")
+        if field.field_type == FieldType.RADIO and await self._radio_already_checked(field):
+            return (field, True, "Already selected manually - skipped")
+        if field.field_type == FieldType.CHECKBOX and await self._checkbox_already_checked(field):
+            return (field, True, "Already checked manually - skipped")
+
         if self._requires_integer_answer(field):
             return await self._fill_integer_screening_question(field)
 
@@ -1113,5 +1128,26 @@ class FormFiller:
         for opt in options:
             if value_lower in opt.lower() or opt.lower() in value_lower:
                 return opt
+
+        # Convert a numeric free-text answer (for example "4+ years") to a
+        # bounded choice such as "Less than 5 years" or "5-6 years".
+        numeric = re.search(r"(?<!\d)(\d+(?:\.\d+)?)(?!\d)", value_lower)
+        if numeric:
+            number = float(numeric.group(1))
+            for opt in options:
+                label = opt.lower().replace("\u2013", "-").replace("\u2014", "-")
+                bounds = [float(item) for item in re.findall(r"\d+(?:\.\d+)?", label)]
+                if not bounds:
+                    continue
+                if re.search(r"\b(less than|under|below)\b", label) and number < bounds[0]:
+                    return opt
+                if re.search(r"\b(more than|over|above)\b", label) and number > bounds[0]:
+                    return opt
+                if re.search(r"\b(at least|minimum)\b", label) and number >= bounds[0]:
+                    return opt
+                if len(bounds) >= 2 and bounds[0] <= number <= bounds[1]:
+                    return opt
+                if re.search(r"\d\s*\+", label) and number >= bounds[0]:
+                    return opt
 
         return None

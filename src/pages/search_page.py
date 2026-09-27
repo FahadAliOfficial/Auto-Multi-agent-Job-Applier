@@ -13,10 +13,11 @@ from __future__ import annotations
 import re
 import asyncio
 from dataclasses import dataclass
-from urllib.parse import urlencode, quote_plus, urljoin
+from urllib.parse import urlencode, quote_plus, urljoin, urlparse
 from playwright.async_api import Page, Locator, TimeoutError as PlaywrightTimeout
 
 from src.database import Job
+from src.extension_browser import ExtensionBridgeError
 from src.utils.logger import logger, console
 from src.utils.delay import between_actions, between_pages
 
@@ -161,7 +162,7 @@ class SearchPage:
         url = self.build_search_url(query, page_num)
         logger.info(f"🔍 Searching: '{query}' — Page {page_num + 1}")
 
-        await self.page.goto(url, wait_until="domcontentloaded", timeout=20000)
+        await self._navigate_to_results(url)
         await between_pages()
 
         # Wait for job cards to load
@@ -186,11 +187,7 @@ class SearchPage:
             logger.warning(
                 "No results with Indeed Apply filter; retrying the broader search"
             )
-            await self.page.goto(
-                fallback_url,
-                wait_until="domcontentloaded",
-                timeout=20000,
-            )
+            await self._navigate_to_results(fallback_url)
             await between_pages()
             try:
                 await self.page.wait_for_selector(
@@ -202,6 +199,37 @@ class SearchPage:
                 return []
 
         return await self._parse_listings()
+
+    async def _navigate_to_results(self, url: str) -> None:
+        """Navigate without discarding an already-rendered SERP on load timeout."""
+        try:
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            return
+        except (PlaywrightTimeout, ExtensionBridgeError) as exc:
+            if isinstance(exc, ExtensionBridgeError) and "timed out" not in str(exc).lower():
+                raise
+
+            # A timeout can mean only that ads/analytics kept Chrome's loading
+            # state alive. Probe the DOM so extension mode refreshes page.url,
+            # then accept the requested Indeed search document if it committed.
+            try:
+                await self.page.locator("body").count()
+            except Exception:
+                raise exc
+
+            current = urlparse(str(getattr(self.page, "url", "")))
+            expected = urlparse(url)
+            current_host = (current.hostname or "").lower()
+            expected_host = (expected.hostname or "").lower()
+            if (
+                current.path.rstrip("/").lower() == "/jobs"
+                and current_host == expected_host
+            ):
+                logger.warning(
+                    "Search navigation timed out, but the requested results page rendered; continuing"
+                )
+                return
+            raise exc
 
     async def _parse_listings(self) -> list[JobListing]:
         """Parse all job listings from the current search results page."""

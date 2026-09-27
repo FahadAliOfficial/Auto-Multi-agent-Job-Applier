@@ -10,11 +10,13 @@ Handles:
 from __future__ import annotations
 
 import asyncio
+import random
 import re
 from urllib.parse import parse_qs, urlparse
 from playwright.async_api import BrowserContext, Page, TimeoutError as PlaywrightTimeout
 
 from src.control_center import REGISTRY
+from src.extension_browser import ExtensionBridgeError
 from src.utils.logger import cc_print, console, logger
 from src.utils.delay import between_actions
 
@@ -44,17 +46,52 @@ JOB_CONTENT_SELECTORS = (
 class JobPage:
     """Page object for an individual Indeed job listing."""
 
-    def __init__(self, page: Page):
+    def __init__(self, page: Page, config: dict | None = None):
         self.page = page
+        self.config = config or {}
         self._context: BrowserContext | None = None
         self._expected_title = ""
         self._extension_mode = bool(getattr(page, "is_extension", False))
+        self.last_navigation_timeout = False
+        self._throttle_signal: str | None = None
 
     def set_context(self, context: BrowserContext) -> None:
         """Provide the browser context so we can watch for new tabs."""
         self._context = context
 
     async def open(
+        self,
+        url: str,
+        agent_id: str = "",
+        expected_title: str = "",
+    ) -> bool:
+        """Open a job, cooling down and retrying the same job after a timeout."""
+        delays = self.config.get("bot", {}).get("delays", {})
+        retry_attempts = max(0, int(delays.get("navigation_retry_attempts", 0)))
+        for attempt in range(retry_attempts + 1):
+            self.last_navigation_timeout = False
+            if await self._open_once(url, agent_id, expected_title):
+                return True
+            if not self.last_navigation_timeout or attempt >= retry_attempts:
+                return False
+
+            minimum = float(delays.get("navigation_retry_delay_min", 5))
+            maximum = float(delays.get("navigation_retry_delay_max", 10))
+            if maximum < minimum:
+                minimum, maximum = maximum, minimum
+            seconds = random.uniform(max(0, minimum), max(0, maximum))
+            logger.warning(
+                "Navigation timed out; preserving this job and cooling down "
+                "for %.0f seconds before retry %s/%s",
+                seconds,
+                attempt + 1,
+                retry_attempts,
+            )
+            if not await self._interruptible_wait(seconds, agent_id):
+                return False
+        return False
+
+    async def _open_once(
         self,
         url: str,
         agent_id: str = "",
@@ -72,11 +109,15 @@ class JobPage:
         try:
             try:
                 await self.page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            except PlaywrightTimeout:
+            except (PlaywrightTimeout, ExtensionBridgeError) as exc:
+                if isinstance(exc, ExtensionBridgeError) and "timed out" not in str(exc).lower():
+                    raise
                 # Indeed can continue loading trackers/background resources after
                 # useful job content has rendered. Validate the DOM before treating
                 # a navigation timeout as a failed job page.
                 if not await self._job_content_present(self._expected_title):
+                    self.last_navigation_timeout = True
+                    self._throttle_signal = "timeout"
                     logger.warning(f"Job page navigation timed out: {url}")
                     return False
                 logger.debug("Job content rendered despite navigation timeout")
@@ -88,6 +129,8 @@ class JobPage:
 
             captcha_was_present = await self._captcha_present()
             if captcha_was_present:
+                if self._throttle_signal != "timeout":
+                    self._throttle_signal = "captcha"
                 solved = await self._wait_for_captcha(agent_id)
                 if not solved:
                     return False
@@ -154,6 +197,30 @@ class JobPage:
         except Exception as e:
             logger.error(f"Failed to open job page: {e}")
             return False
+
+    def mark_throttle_signal(self, reason: str = "captcha") -> None:
+        """Record the strongest current anti-abuse pressure signal."""
+        if self._throttle_signal != "timeout" or reason == "timeout":
+            self._throttle_signal = reason
+
+    def consume_throttle_signal(self) -> str | None:
+        """Return and clear the current anti-abuse pressure signal."""
+        signaled = self._throttle_signal
+        self._throttle_signal = None
+        return signaled
+
+    async def _interruptible_wait(self, seconds: float, agent_id: str) -> bool:
+        """Wait without making Stop, Skip, or Pause controls unresponsive."""
+        deadline = asyncio.get_running_loop().time() + seconds
+        while asyncio.get_running_loop().time() < deadline:
+            if agent_id:
+                if REGISTRY.is_stopped(agent_id) or REGISTRY.is_skip_requested(agent_id):
+                    return False
+                if not await REGISTRY.wait_if_paused(agent_id):
+                    return False
+            remaining = deadline - asyncio.get_running_loop().time()
+            await asyncio.sleep(min(0.5, max(0, remaining)))
+        return True
 
     async def _job_content_present(self, expected_title: str = "") -> bool:
         """Return whether recognizable, visible job-detail content is rendered."""
@@ -585,7 +652,7 @@ class JobPage:
         logger.warning("Could not find or click a company-site apply button")
         return None
 
-    async def click_apply(self) -> bool:
+    async def click_apply(self, agent_id: str = "") -> bool:
         """Click the 'Apply now' / Easy Apply button.
 
         Returns:
@@ -605,16 +672,116 @@ class JobPage:
             '.indeed-apply-button',
         ]
 
+        attempted = 0
         for sel in apply_selectors:
-            btn = self.page.locator(sel)
-            if await btn.count() > 0:
-                await btn.first.click()
-                logger.info("🖱️ Clicked Apply button")
-                await between_actions()
-                return True
+            buttons = self.page.locator(sel)
+            for index in range(await buttons.count()):
+                btn = buttons.nth(index)
+                try:
+                    if not await btn.is_visible() or not await btn.is_enabled():
+                        continue
+                    await btn.click()
+                    attempted += 1
+                    if not self._extension_mode:
+                        logger.info("Clicked Apply button")
+                        await between_actions()
+                        return True
+                    if await self._wait_for_application_started(timeout=4000):
+                        logger.info("Clicked Apply button; application opened")
+                        return True
+                    logger.warning(
+                        "Apply control was clicked, but no application form opened; "
+                        "trying another visible match"
+                    )
+                    if attempted >= 2:
+                        break
+                except Exception as exc:
+                    logger.debug("Apply click failed for '%s': %s", sel, exc)
+                    continue
+            if attempted >= 2:
+                break
 
-        logger.warning("Could not find Apply button")
+        if attempted and agent_id:
+            return await self._request_manual_apply_start(agent_id)
+
+        logger.warning("Could not find a usable Apply button")
         return False
+
+    async def _wait_for_application_started(self, timeout: int = 4000) -> bool:
+        """Return once an Indeed application URL, frame, or control is visible."""
+        selectors = [
+            'iframe[src*="indeedapply" i]',
+            'iframe[src*="smartapply" i]',
+            '[data-testid^="ia-"]',
+            '[class*="ia-BasePage"]',
+            '[class*="ia-FormPage"]',
+            '#ia-container',
+            '.indeed-apply-widget',
+            'input[type="file"]',
+            'button:has-text("Continue")',
+            'button:has-text("Review your application")',
+            'button:has-text("Submit your application")',
+        ]
+        deadline = asyncio.get_running_loop().time() + timeout / 1000
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                await self.page.locator("body").count()
+            except Exception:
+                pass
+            current_url = str(getattr(self.page, "url", "")).lower()
+            if any(marker in current_url for marker in ("indeedapply", "smartapply", "applystart")):
+                return True
+            for selector in selectors:
+                try:
+                    matches = self.page.locator(selector)
+                    count = await matches.count()
+                    for index in range(count):
+                        if await matches.nth(index).is_visible():
+                            return True
+                except Exception:
+                    continue
+            await asyncio.sleep(0.1 if self._extension_mode else 0.25)
+        return False
+
+    async def _request_manual_apply_start(self, agent_id: str) -> bool:
+        """Keep this job open while the user manually starts its application."""
+        message = (
+            "The Apply button was clicked, but Indeed did not open the application. "
+            "Click Apply now in the browser yourself. Once the application form "
+            "is visible, click Continue here."
+        )
+        REGISTRY.set_state(agent_id, "manual_wait")
+        REGISTRY.set_prompt(agent_id, message, options=["Continue", "Skip job"])
+        REGISTRY.append_log(agent_id, "waiting for user to open the application form")
+        try:
+            await self.page.bring_to_front()
+        except Exception:
+            pass
+
+        while True:
+            if REGISTRY.is_stopped(agent_id):
+                REGISTRY.clear_prompt(agent_id)
+                return False
+            if REGISTRY.is_skip_requested(agent_id):
+                REGISTRY.clear_prompt(agent_id)
+                return False
+            if await self._wait_for_application_started(timeout=500):
+                REGISTRY.clear_prompt(agent_id)
+                REGISTRY.set_state(agent_id, "applying")
+                REGISTRY.append_log(agent_id, "application form opened; continuing")
+                return True
+            answer = REGISTRY.consume_answer(agent_id)
+            if answer is not None:
+                normalized = str(answer).strip().lower()
+                if normalized in {"__skip_job__", "skip", "skip job"}:
+                    REGISTRY.clear_prompt(agent_id)
+                    return False
+                if await self._wait_for_application_started(timeout=4000):
+                    REGISTRY.clear_prompt(agent_id)
+                    REGISTRY.set_state(agent_id, "applying")
+                    return True
+                REGISTRY.set_prompt(agent_id, message, options=["Continue", "Skip job"])
+            await asyncio.sleep(0.25)
 
     async def should_skip(self, skip_keywords: list[str], skip_companies: list[str]) -> str | None:
         """Check if this job should be skipped based on config rules.

@@ -12,6 +12,7 @@ Coordinates the entire application workflow:
 from __future__ import annotations
 
 import asyncio
+import random
 import re
 import threading
 import webbrowser
@@ -257,7 +258,7 @@ class IndeedBot:
     ) -> None:
         """Run a single search query through multiple pages of results."""
         search_page = SearchPage(page, self.config, country=country)
-        job_page = JobPage(page)
+        job_page = JobPage(page, self.config)
         # Give job_page the browser context so it can intercept new tabs
         if self.browser_manager and self.browser_manager._context:
             job_page.set_context(self.browser_manager._context)
@@ -305,6 +306,7 @@ class IndeedBot:
                 if max_apps and self.jobs_applied >= max_apps:
                     break
 
+                applied_before = self.jobs_applied
                 await self._process_listing(
                     page, listing, job_page, mode, query, agent_id=agent_id
                 )
@@ -317,6 +319,15 @@ class IndeedBot:
                         mode,
                         query,
                         agent_id,
+                    )
+                if (
+                    (not max_apps or self.jobs_applied < max_apps)
+                    and (not agent_id or not REGISTRY.is_stopped(agent_id))
+                ):
+                    await self._pace_before_next_job(
+                        agent_id,
+                        applied=self.jobs_applied > applied_before,
+                        throttled=job_page.consume_throttle_signal(),
                     )
 
             if agent_id and REGISTRY.is_stopped(agent_id):
@@ -352,6 +363,47 @@ class IndeedBot:
         if not await REGISTRY.wait_if_paused(agent_id):
             return False
         return not REGISTRY.is_stopped(agent_id)
+
+    async def _pace_before_next_job(
+        self,
+        agent_id: str,
+        *,
+        applied: bool,
+        throttled: bool | str,
+    ) -> bool:
+        """Apply an adaptive, control-center-aware delay between listings."""
+        delays = self.config.get("bot", {}).get("delays", {})
+        if throttled == "captcha":
+            minimum = float(delays.get("captcha_cooldown_min", 10))
+            maximum = float(delays.get("captcha_cooldown_max", 20))
+            reason = "CAPTCHA cleared"
+        elif throttled:
+            minimum = float(delays.get("throttle_cooldown_min", 60))
+            maximum = float(delays.get("throttle_cooldown_max", 120))
+            reason = "navigation timeout"
+        elif applied:
+            minimum = float(delays.get("after_application_min", 15))
+            maximum = float(delays.get("after_application_max", 30))
+            reason = "completed application"
+        else:
+            minimum = float(delays.get("between_jobs_min", 8))
+            maximum = float(delays.get("between_jobs_max", 20))
+            reason = "next job"
+
+        if maximum < minimum:
+            minimum, maximum = maximum, minimum
+        seconds = random.uniform(max(0, minimum), max(0, maximum))
+        logger.info("Pacing for %.0f seconds before the next job (%s)", seconds, reason)
+        deadline = asyncio.get_running_loop().time() + seconds
+        while asyncio.get_running_loop().time() < deadline:
+            if agent_id:
+                if REGISTRY.is_stopped(agent_id):
+                    return False
+                if not await REGISTRY.wait_if_paused(agent_id):
+                    return False
+            remaining = deadline - asyncio.get_running_loop().time()
+            await asyncio.sleep(min(0.5, max(0, remaining)))
+        return True
 
     async def _consume_control_skip(self, agent_id: str, listing: JobListing) -> bool:
         """Persist and clear a Skip Job request for the current listing."""
@@ -578,7 +630,9 @@ class IndeedBot:
 
         try:
             # Click apply
-            if not await job_page.click_apply():
+            if not await job_page.click_apply(agent_id=agent_id):
+                if await self._consume_control_skip(agent_id, listing):
+                    return
                 await self.db.update_job_status(listing.indeed_job_id, "failed", "Could not click Apply")
                 self.jobs_failed += 1
                 return
@@ -607,6 +661,8 @@ class IndeedBot:
                 job_context,
             )
             success = await apply_form.complete_application(listing.indeed_job_id, resume_path)
+            if job_context.get("captcha_encountered"):
+                job_page.mark_throttle_signal()
 
             if success:
                 await self.db.update_job_status(listing.indeed_job_id, "applied")
@@ -627,6 +683,9 @@ class IndeedBot:
             else:
                 requirements_declined = bool(job_context.get("requirements_declined"))
                 stalled_form_skipped = bool(job_context.get("stalled_form_skipped"))
+                manual_intervention_skipped = bool(
+                    job_context.get("manual_intervention_skipped")
+                )
                 if agent_id and REGISTRY.is_stopped(agent_id):
                     await self.db.update_job_status(
                         listing.indeed_job_id,
@@ -635,7 +694,7 @@ class IndeedBot:
                     )
                     REGISTRY.append_log(agent_id, f"stopped during: {listing.title}")
                     return
-                if requirements_declined or stalled_form_skipped or (
+                if requirements_declined or stalled_form_skipped or manual_intervention_skipped or (
                     agent_id and REGISTRY.is_skip_requested(agent_id)
                 ):
                     reason = (
@@ -644,7 +703,11 @@ class IndeedBot:
                         else (
                             "Application form loading skipped"
                             if stalled_form_skipped
-                            else "Skipped by user"
+                            else (
+                                "Manual intervention skipped"
+                                if manual_intervention_skipped
+                                else "Skipped by user"
+                            )
                         )
                     )
                     await self.db.update_job_status(

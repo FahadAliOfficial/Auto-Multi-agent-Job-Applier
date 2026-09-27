@@ -128,11 +128,58 @@ async function getTab(tabId) {
   return tabData(tab);
 }
 
-async function waitForLoad(tabId, timeout = 30000) {
+async function documentLoadState(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: {tabId},
+      func: () => ({
+        readyState: document.readyState,
+        href: location.href,
+        timeOrigin: performance.timeOrigin,
+        hasBody: Boolean(document.body)
+      })
+    });
+    return results[0]?.result || null;
+  } catch (_) {
+    // Chrome rejects script injection briefly while a new document is being
+    // committed. The polling loop will try again on the next tick.
+    return null;
+  }
+}
+
+async function waitForLoad(
+  tabId,
+  timeout = 30000,
+  state = "complete",
+  previousDocument = null
+) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const tab = await chrome.tabs.get(tabId);
-    if (tab.status === "complete") return tabData(tab);
+    const documentState = await documentLoadState(tabId);
+    const isNewDocument = !previousDocument || Boolean(
+      documentState
+      && (
+        documentState.href !== previousDocument.href
+        || documentState.timeOrigin !== previousDocument.timeOrigin
+      )
+    );
+    if (
+      tab.status === "complete"
+      && isNewDocument
+    ) return tabData(tab);
+    if (state === "domcontentloaded") {
+      if (
+        documentState?.hasBody
+        && ["interactive", "complete"].includes(documentState.readyState)
+        // Do not mistake the old document for the newly requested page during
+        // the brief interval before Chrome commits the navigation. timeOrigin
+        // also distinguishes a reload of the exact same URL.
+        && isNewDocument
+      ) {
+        return {...tabData(tab), url: documentState.href || tab.url || ""};
+      }
+    }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error("Timed out waiting for tab to load");
@@ -162,11 +209,18 @@ async function handleCommand(message) {
       await rememberTab(tab.id);
       return tabData(tab);
     }
-    case "navigate":
+    case "navigate": {
+      const previousDocument = await documentLoadState(tabId);
       await chrome.tabs.update(tabId, {url: message.url});
-      return await waitForLoad(tabId, message.timeout);
+      return await waitForLoad(
+        tabId,
+        message.timeout,
+        message.state || "complete",
+        previousDocument
+      );
+    }
     case "wait_for_load":
-      return await waitForLoad(tabId, message.timeout);
+      return await waitForLoad(tabId, message.timeout, message.state || "complete");
     case "activate": {
       const tab = await chrome.tabs.get(tabId);
       await chrome.windows.update(tab.windowId, {focused: true});
@@ -409,31 +463,43 @@ async function runDomOperation(descriptor, operation, payload) {
       } while (Date.now() < deadline);
       if (!value) throw new Error("Timed out waiting for locator");
     } else if (operation === "wait_ready") {
-      const deadline = Date.now() + (payload.timeout || 30000);
-      do {
-        const text = (document.body?.innerText || "").toLowerCase();
-        const fields = [...document.querySelectorAll(
-          "input:not([type=hidden]):not([type=submit]):not([type=button]),select,textarea,[role=combobox],[aria-haspopup=listbox]"
-        )].filter(visible);
-        const actions = [...document.querySelectorAll(
-          "button,a,[role=button],input[type=submit],input[type=button]"
-        )].filter((el) => {
-          if (!visible(el) || el.disabled || el.getAttribute("aria-disabled") === "true") {
-            return false;
-          }
-          const label = (
-            el.innerText || el.value || el.getAttribute("aria-label") || ""
-          ).trim().toLowerCase();
-          return /^(continue|next|review|review your application|submit your application|submit application|submit|apply anyway)$/.test(label)
-            && !/save and close|report/.test(label);
-        });
-        if (/application submitted|you have applied|application sent|add a resume|upload a resume/.test(text)
-            || /(?:don.t|do not) meet (?:these|the) employer requirements/.test(text)
-            || fields.length > 0
-            || actions.length > 0) { value = true; break; }
-        await new Promise((resolveWait) => setTimeout(resolveWait, 100));
-      } while (Date.now() < deadline);
-      if (!value) throw new Error("Timed out waiting for page readiness");
+      // This function runs in every frame. Never wait inside one frame because
+      // chrome.scripting.executeScript waits for all frame calls to finish; an
+      // empty top frame would otherwise delay a ready apply iframe by 20 s.
+      const text = (document.body?.innerText || "").toLowerCase();
+      const frameIdentity = `${location.href} ${document.title || ""} ${window.name || ""}`;
+      const applyContext = (
+        window !== window.top
+        && /indeedapply|smartapply|apply[-_. \/]?form|\bapply\b/i.test(frameIdentity)
+      )
+        || Boolean(document.querySelector(
+          '[data-testid^="ia-"], [class*="ia-BasePage"], [class*="ia-FormPage"], #ia-container, .indeed-apply-widget'
+        ));
+      const fields = [...document.querySelectorAll(
+        "input:not([type=hidden]):not([type=submit]):not([type=button]),select,textarea,[role=combobox],[aria-haspopup=listbox]"
+      )].filter(visible);
+      const controls = [...document.querySelectorAll(
+        "button,a,[role=button],input[type=submit],input[type=button]"
+      )].filter((el) => (
+        visible(el) && !el.disabled && el.getAttribute("aria-disabled") !== "true"
+      ));
+      const actions = controls.filter((el) => {
+        if (!visible(el) || el.disabled || el.getAttribute("aria-disabled") === "true") {
+          return false;
+        }
+        const label = (
+          el.innerText || el.value || el.getAttribute("aria-label") || ""
+        ).trim().toLowerCase();
+        return /^(continue|next|review|review your application|submit your application|submit application|submit|apply anyway)$/.test(label)
+          && !/save and close|report/.test(label);
+      });
+      if (/your application (?:has been|was) submitted|application (?:submitted|sent|complete)|you(?: have|'ve) applied|successfully applied|your application was sent|add a resume|upload a resume/.test(text)
+          || /(?:don.t|do not) meet (?:these|the) employer requirements/.test(text)
+          || controls.some((el) => /^(applied|application submitted|application sent)$/.test(
+            (el.innerText || el.value || el.getAttribute("aria-label") || "").trim().toLowerCase()
+          ))
+          || (applyContext && (fields.length > 0 || actions.length > 0))) value = true;
+      else throw new Error("Page is not ready yet");
     } else if (operation === "evaluate_known") {
       const source = payload.expression || "";
       const el = descriptor.kind === "page" ? null : first();

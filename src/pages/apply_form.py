@@ -44,6 +44,9 @@ class ApplyForm:
         self.question_matcher = question_matcher
         self.job_context = job_context or {}
         self.max_steps = 10  # Safety limit to prevent infinite loops
+        self._submission_confirmed = False
+        self._submit_attempted = False
+        self._manual_completion_expected = False
         browser_cfg = config.get("bot", {}).get("browser", {})
         extension_cfg = browser_cfg.get("extension", {}) or {}
         self.fast_extension_forms = (
@@ -67,6 +70,7 @@ class ApplyForm:
 
         step = 0
         loading_retries = 0
+        empty_step_retries = 0
         last_filled_signature = ""
         while step < self.max_steps:
             step += 1
@@ -75,8 +79,17 @@ class ApplyForm:
             if not await self._control_allows_continue():
                 return False
 
+            # Confirmation pages intentionally have no form controls. Detect
+            # completion before waiting for another editable application step.
+            if getattr(self, "_submission_confirmed", False) or await self._is_application_complete():
+                logger.info("✅ Application submitted successfully!")
+                return True
+
             # Wait for form content to load
             if not await self._wait_for_form_content():
+                if await self._is_application_complete():
+                    logger.info("✅ Application submitted successfully!")
+                    return True
                 if loading_retries < 1:
                     loading_retries += 1
                     step -= 1
@@ -104,12 +117,23 @@ class ApplyForm:
             # Check for errors
             error = await self._check_for_errors()
             if error:
-                logger.error(f"❌ Form error: {error}")
+                logger.warning("Form needs manual attention: %s", error)
+                if await self._request_manual_intervention(
+                    f"Indeed is showing this validation message:\n\n{error}"
+                ):
+                    step -= 1
+                    continue
                 return False
 
             resume_handled = False
             if resume_path and await self._looks_like_resume_step():
                 if not await self.handle_resume_step(resume_path):
+                    if await self._request_manual_intervention(
+                        "The bot could not upload or select the resume. "
+                        "Please complete the resume step manually."
+                    ):
+                        step -= 1
+                        continue
                     return False
                 resume_handled = True
 
@@ -138,22 +162,19 @@ class ApplyForm:
                     if field.field_type != FieldType.FILE_UPLOAD
                 ]
             if fields:
+                empty_step_retries = 0
                 logger.info(f"  Found {len(fields)} fields to fill")
                 field_signature = self._field_signature(fields)
                 if field_signature and field_signature == last_filled_signature:
-                    logger.info("Repeated form step detected after Continue; skipping refill")
-                    advanced = await self._advance_form()
-                    if not advanced:
-                        if await self._handle_captcha_if_present():
-                            await self._pause_between_actions()
-                            continue
-                        if await self._is_application_complete():
-                            logger.info("âœ… Application submitted successfully!")
-                            return True
-                        logger.warning("Could not advance repeated form step")
-                        break
-                    await self._pause_between_actions()
-                    continue
+                    logger.warning("The same form step remained after Continue")
+                    if await self._request_manual_intervention(
+                        "Indeed kept the same application step after Continue. "
+                        "Please resolve any highlighted field or validation message."
+                    ):
+                        last_filled_signature = ""
+                        step -= 1
+                        continue
+                    return False
 
                 results = await self.filler.fill_fields(fields)
 
@@ -168,7 +189,25 @@ class ApplyForm:
                     else:
                         logger.warning(f"  ✗ {field.category.name}: {message}")
 
-                if results and all(success for _, success, _ in results):
+                failed_results = [
+                    (field, message)
+                    for field, success, message in results
+                    if not success
+                ]
+                if failed_results:
+                    details = "\n".join(
+                        f"- {field.label or field.category.name}: {message}"
+                        for field, message in failed_results
+                    )
+                    if await self._request_manual_intervention(
+                        "The bot could not complete these fields:\n\n" + details
+                    ):
+                        last_filled_signature = ""
+                        step -= 1
+                        continue
+                    return False
+
+                if results:
                     last_filled_signature = field_signature
                 else:
                     last_filled_signature = ""
@@ -183,13 +222,45 @@ class ApplyForm:
                 if await self._is_application_complete():
                     logger.info("✅ Application submitted successfully!")
                     return True
-                logger.warning("Could not advance form — may be stuck")
-                break
+                if not fields and empty_step_retries < 2:
+                    empty_step_retries += 1
+                    step -= 1
+                    logger.warning(
+                        "Application controls are not ready yet; retrying empty step (%s/2)",
+                        empty_step_retries,
+                    )
+                    await self.page.wait_for_timeout(
+                        500 if self.fast_extension_forms else 1500
+                    )
+                    continue
+                reason = (
+                    "No usable application controls were detected."
+                    if not fields
+                    else "The bot could not find or activate Continue, Review, or Submit."
+                )
+                logger.warning("%s Requesting manual help.", reason)
+                if await self._request_manual_intervention(reason):
+                    empty_step_retries = 0
+                    last_filled_signature = ""
+                    step -= 1
+                    continue
+                return False
 
+            empty_step_retries = 0
             await self._pause_between_actions()
 
-        logger.error("❌ Hit max form steps — something went wrong")
-        return False
+        # Do not abandon the current job at the safety limit. Automation stops
+        # clicking here; the user can finish the remaining steps manually, and
+        # Continue only re-checks for Indeed's submission confirmation.
+        while True:
+            if await self._is_application_complete():
+                logger.info("✅ Application submitted successfully after manual completion!")
+                return True
+            if not await self._request_manual_intervention(
+                "The automated step safety limit was reached. Please finish and "
+                "submit the current application manually, then click Continue."
+            ):
+                return False
 
     def _skip_requested(self) -> bool:
         agent_id = str(self.job_context.get("agent_id", "")).strip()
@@ -364,6 +435,11 @@ class ApplyForm:
         if not await self._captcha_present():
             return False
 
+        # Let the orchestrator apply a longer cooldown before it touches the
+        # next job. The current application remains active until this CAPTCHA
+        # is solved or the user explicitly skips/stops it.
+        self.job_context["captcha_encountered"] = True
+
         agent_id = str(self.job_context.get("agent_id", "")).strip()
         if agent_id:
             REGISTRY.set_state(agent_id, "captcha_wait")
@@ -422,6 +498,7 @@ class ApplyForm:
                 REGISTRY.set_captcha_wait_count()
             await submit.scroll_into_view_if_needed()
             previous_step = await self._current_step_fingerprint()
+            self._submit_attempted = True
             await submit.click()
             await self._wait_after_navigation_click("Submit your application", previous_step)
             return True
@@ -551,7 +628,7 @@ class ApplyForm:
                     };
 
                     const text = (document.body.innerText || '').toLowerCase();
-                    if (/your application has been submitted|application submitted|you have applied|application sent/.test(text)) {
+                    if (/your application (?:has been|was) submitted|application (?:submitted|sent|complete)|you(?: have|'ve) applied|successfully applied|your application was sent/.test(text)) {
                         return true;
                     }
                     if (/add a resume|upload a resume|build an indeed resume/.test(text)) {
@@ -594,22 +671,57 @@ class ApplyForm:
 
     async def _prompt_stalled_form(self) -> bool:
         """Ask whether to keep waiting when Indeed leaves the form on a spinner."""
-        if str(self.job_context.get("mode", "")).lower() != "semi":
-            return False
-        agent_id = str(self.job_context.get("agent_id", "")).strip() or None
-        answer = await self.question_matcher.prompt_user(
-            "Indeed's application form is still loading and has no usable fields yet. "
-            "Keep the application open and wait again?",
-            options=["Retry", "Skip job"],
-            agent_id=agent_id,
+        return await self._request_manual_intervention(
+            "Indeed's application form is still loading and has no usable "
+            "fields. You may wait, reload the application area, or complete "
+            "the visible step manually."
         )
-        return re.sub(r"\s+", " ", answer or "").strip().lower() in {
-            "retry",
-            "continue",
-            "wait",
-            "yes",
-            "y",
-        }
+
+    async def _request_manual_intervention(self, reason: str) -> bool:
+        """Keep the current application open until the user fixes or skips it."""
+        agent_id = str(self.job_context.get("agent_id", "")).strip()
+        message = (
+            "Manual help is needed on the current application.\n\n"
+            f"{reason}\n\n"
+            "Complete the required action in the Indeed automation tab without "
+            "closing it, then click Continue. The bot will re-read this same step."
+        )
+
+        try:
+            await self.page.bring_to_front()
+        except Exception:
+            pass
+
+        if agent_id:
+            REGISTRY.set_state(agent_id, "manual_wait")
+            REGISTRY.append_log(agent_id, f"manual help requested: {reason}")
+
+        # The user may press the final Submit button while the bot is paused.
+        # Allow textual confirmation copy to count only after that explicit
+        # hand-off (or after an automated submit attempt), never on an untouched
+        # review page where similar wording may be explanatory text.
+        self._manual_completion_expected = True
+
+        answer = await self.question_matcher.prompt_user(
+            message,
+            options=["Continue", "Skip job"],
+            agent_id=agent_id or None,
+        )
+        normalized = re.sub(r"\s+", " ", answer or "").strip().lower()
+
+        if agent_id and not REGISTRY.is_stopped(agent_id):
+            REGISTRY.set_state(agent_id, "applying")
+
+        if normalized in {"continue", "resume", "done", "ok", "yes", "y"}:
+            if agent_id:
+                REGISTRY.append_log(agent_id, "manual action confirmed; re-reading current step")
+            return True
+
+        if not (agent_id and REGISTRY.is_stopped(agent_id)):
+            self.job_context["manual_intervention_skipped"] = True
+            if agent_id:
+                REGISTRY.append_log(agent_id, "manual intervention skipped by user")
+        return False
 
     async def _advance_form(self) -> bool:
         """Click the Continue/Next/Submit button to advance to the next step.
@@ -644,9 +756,27 @@ class ApplyForm:
             '[data-testid="ia-continue"]',
         ]
 
+        # Keep each action in an explicit priority group. A combined role
+        # locator uses DOM order, which can select a stale Continue control
+        # before the visible final Submit control on Indeed's review page.
         role_buttons = [
-            self.page.get_by_role("button", name=button_names),
-            self.page.locator('input[type="submit"], input[type="button"]').filter(has_text=button_names),
+            self.page.get_by_role(
+                "button",
+                name=re.compile(
+                    r"^(submit your application|submit application|submit)$",
+                    re.IGNORECASE,
+                ),
+            ),
+            self.page.locator('input[type="submit"]').filter(has_text=button_names),
+            self.page.get_by_role(
+                "button",
+                name=re.compile(r"^(review|review your application)$", re.IGNORECASE),
+            ),
+            self.page.get_by_role(
+                "button",
+                name=re.compile(r"^(continue|next)$", re.IGNORECASE),
+            ),
+            self.page.locator('input[type="button"]').filter(has_text=button_names),
         ]
         if await self._click_first_available(role_buttons):
             return True
@@ -658,11 +788,13 @@ class ApplyForm:
                     # Make sure button is visible and enabled
                     first_btn = btn.first
                     if await first_btn.is_visible() and await first_btn.is_enabled():
-                        btn_text = (await first_btn.inner_text()).strip()
+                        btn_text = await self._button_label(first_btn)
                         if not self._is_form_navigation_label(btn_text):
                             continue
                         logger.info(f"  → Clicking: '{btn_text}'")
                         previous_step = await self._current_step_fingerprint()
+                        if re.search(r"\bsubmit\b", btn_text or "", re.IGNORECASE):
+                            self._submit_attempted = True
                         await first_btn.click()
                         await self._wait_after_navigation_click(btn_text, previous_step)
                         return True
@@ -679,17 +811,19 @@ class ApplyForm:
                 if await self._click_first_available(frame_role_buttons):
                     return True
 
-                for sel in button_selectors[:6]:
+                for sel in button_selectors:
                     try:
                         btn = frame.locator(sel)
                         if await btn.count() > 0:
                             first_btn = btn.first
                             if await first_btn.is_visible() and await first_btn.is_enabled():
-                                btn_text = (await first_btn.inner_text()).strip()
+                                btn_text = await self._button_label(first_btn)
                                 if not self._is_form_navigation_label(btn_text):
                                     continue
                                 logger.info(f"  â†’ Clicking: '{btn_text}'")
                                 previous_step = await self._current_step_fingerprint()
+                                if re.search(r"\bsubmit\b", btn_text or "", re.IGNORECASE):
+                                    self._submit_attempted = True
                                 await first_btn.click()
                                 await self._wait_after_navigation_click(btn_text, previous_step)
                                 return True
@@ -708,15 +842,14 @@ class ApplyForm:
                 for idx in range(count):
                     candidate = locator.nth(idx)
                     if await candidate.is_visible() and await candidate.is_enabled():
-                        try:
-                            text = (await candidate.inner_text()).strip()
-                        except Exception:
-                            text = await candidate.get_attribute("value") or ""
+                        text = await self._button_label(candidate)
                         logger.info(f"  â†’ Clicking: '{text or 'button'}'")
                         if not self._is_form_navigation_label(text):
                             continue
                         await candidate.scroll_into_view_if_needed()
                         previous_step = await self._current_step_fingerprint()
+                        if re.search(r"\bsubmit\b", text or "", re.IGNORECASE):
+                            self._submit_attempted = True
                         await candidate.click()
                         await self._wait_after_navigation_click(text, previous_step)
                         return True
@@ -724,6 +857,24 @@ class ApplyForm:
                 continue
 
         return False
+
+    @staticmethod
+    async def _button_label(candidate) -> str:
+        """Read a button label from text, value, or its accessible name."""
+        try:
+            text = (await candidate.inner_text()).strip()
+        except Exception:
+            text = ""
+        if text:
+            return text
+        for attribute in ("value", "aria-label", "title"):
+            try:
+                text = (await candidate.get_attribute(attribute) or "").strip()
+            except Exception:
+                text = ""
+            if text:
+                return text
+        return ""
 
     @staticmethod
     def _is_form_navigation_label(text: str) -> bool:
@@ -760,9 +911,15 @@ class ApplyForm:
     ) -> None:
         """Wait briefly after Continue/Review/Submit actions."""
         if self.fast_extension_forms:
-            await self.page.wait_for_timeout(
-                750 if re.search(r"\bsubmit\b", button_text or "", re.IGNORECASE) else 400
-            )
+            if re.search(r"\bsubmit\b", button_text or "", re.IGNORECASE):
+                deadline = asyncio.get_running_loop().time() + 8
+                while asyncio.get_running_loop().time() < deadline:
+                    if await self._is_application_complete():
+                        self._submission_confirmed = True
+                        return
+                    await asyncio.sleep(0.2)
+                return
+            await self.page.wait_for_timeout(400)
             return
 
         if re.search(r"\bsubmit\b", button_text or "", re.IGNORECASE):
@@ -789,24 +946,67 @@ class ApplyForm:
 
     async def _is_application_complete(self) -> bool:
         """Check if we've reached the success/confirmation page."""
+        if getattr(self, "_submission_confirmed", False):
+            return True
+
         success_indicators = [
-            'text="Your application has been submitted"',
-            'text="Application submitted"',
-            ':has-text("application has been submitted")',
-            ':has-text("You have applied")',
-            ':has-text("Application sent")',
             '[data-testid="ia-success"]',
+            '[data-testid*="postApply" i]',
+            '[data-testid*="application-success" i]',
             '.ia-PostApply',
             '.jobsearch-IndeedApplySuccessContainer',
+            '[class*="PostApply"]',
+            '[class*="ApplicationSuccess"]',
         ]
 
         for sel in success_indicators:
             try:
                 el = self.page.locator(sel)
-                if await el.count() > 0:
-                    return True
+                count = await el.count()
+                for index in range(count):
+                    if await el.nth(index).is_visible():
+                        return True
             except Exception:
                 continue
+
+        confirmation_is_expected = bool(
+            getattr(self, "_submit_attempted", False)
+            or getattr(self, "_manual_completion_expected", False)
+        )
+        if confirmation_is_expected:
+            confirmation_pattern = re.compile(
+                r"your application (?:has been|was) submitted|"
+                r"application (?:submitted|sent|complete)|"
+                r"you(?: have|'ve|’ve) applied|successfully applied|"
+                r"your application was sent",
+                re.IGNORECASE,
+            )
+            try:
+                body_text = await self.page.locator("body").inner_text(timeout=2000)
+                if confirmation_pattern.search(body_text or ""):
+                    return True
+            except Exception:
+                pass
+
+        if confirmation_is_expected:
+            try:
+                applied_status = self.page.get_by_text(
+                    re.compile(r"^(applied|application submitted|application sent)$", re.IGNORECASE),
+                    exact=True,
+                )
+                count = await applied_status.count()
+                for index in range(count):
+                    if await applied_status.nth(index).is_visible():
+                        return True
+            except Exception:
+                pass
+
+        current_url = str(getattr(self.page, "url", "")).lower()
+        if confirmation_is_expected and any(
+            marker in current_url
+            for marker in ("postapply", "application-success", "confirmation")
+        ):
+            return True
 
         return False
 
@@ -827,9 +1027,13 @@ class ApplyForm:
         for sel in error_selectors:
             try:
                 el = self.page.locator(sel)
-                if await el.count() > 0:
-                    text = (await el.first.inner_text()).strip()
-                    if text and "error" in text.lower():
+                count = await el.count()
+                for index in range(count):
+                    candidate = el.nth(index)
+                    if not await candidate.is_visible():
+                        continue
+                    text = (await candidate.inner_text()).strip()
+                    if text:
                         return text
             except Exception:
                 continue

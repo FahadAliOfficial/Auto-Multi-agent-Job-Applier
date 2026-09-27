@@ -180,8 +180,20 @@ bot:
 
   # Delay ranges in seconds (randomized within range)
   delays:
-    between_jobs_min: 30
-    between_jobs_max: 90
+    # Ordinary listings stay responsive while avoiding back-to-back requests.
+    between_jobs_min: 8
+    between_jobs_max: 20
+    # A completed application creates more server traffic than a simple skip.
+    after_application_min: 15
+    after_application_max: 30
+    # A cleared CAPTCHA gets a short pause; navigation timeouts remain cautious.
+    captcha_cooldown_min: 10
+    captcha_cooldown_max: 20
+    throttle_cooldown_min: 60
+    throttle_cooldown_max: 120
+    navigation_retry_attempts: 1
+    navigation_retry_delay_min: 5
+    navigation_retry_delay_max: 10
     between_pages_min: 3
     between_pages_max: 8
     between_actions_min: 1

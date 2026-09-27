@@ -398,7 +398,9 @@ class RemotePage:
         return result
 
     async def goto(self, url: str, wait_until: str = "domcontentloaded", timeout: int = 30000):
-        result = await self._command("navigate", url=url, timeout=timeout)
+        result = await self._command(
+            "navigate", url=url, timeout=timeout, state=wait_until
+        )
         self.url = result.get("url", url)
         return None
 
@@ -411,10 +413,25 @@ class RemotePage:
         return locator
 
     async def wait_for_function(self, _expression: str, timeout: int = 30000, **_kwargs):
-        try:
-            await self._dom({"kind": "page"}, "wait_ready", timeout=timeout)
-        except ExtensionBridgeError as exc:
-            raise PlaywrightTimeoutError(str(exc)) from exc
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout / 1000
+        last_error: ExtensionBridgeError | None = None
+        while loop.time() < deadline:
+            try:
+                # Poll across frames with short bridge calls. Older extension
+                # versions bounded each frame by this value; newer versions do
+                # a single immediate readiness probe.
+                remaining_ms = max(1, int((deadline - loop.time()) * 1000))
+                await self._dom(
+                    {"kind": "page"},
+                    "wait_ready",
+                    timeout=min(500, remaining_ms),
+                )
+                return
+            except ExtensionBridgeError as exc:
+                last_error = exc
+            await asyncio.sleep(0.1)
+        raise PlaywrightTimeoutError(str(last_error or "Timed out waiting for page readiness"))
 
     async def wait_for_timeout(self, timeout: int):
         await asyncio.sleep(timeout / 1000)
