@@ -969,9 +969,10 @@ class IndeedBot:
             await self.shutdown()
 
     async def show_status(self) -> None:
-        """Display statistics from the database."""
+        """Display statistics without mutating sessions or starting a browser."""
         try:
-            await self.initialize()
+            self.load_config()
+            await self.db.connect()
             stats = await self.db.get_stats()
             sessions = await self.db.get_sessions(limit=5)
 
@@ -1008,7 +1009,7 @@ class IndeedBot:
                 console.print(table)
 
         finally:
-            await self.shutdown()
+            await self.db.close()
 
     # ------------------------------------------------------------------
     # Helpers
