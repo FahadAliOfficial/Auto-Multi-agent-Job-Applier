@@ -133,6 +133,22 @@ async function refreshAgents() {
     const res = await fetch('/api/agents');
     if (!res.ok) return;
     const data = await res.json();
+    const renderedAgentIds = new Set(
+        [...document.querySelectorAll('#agents-grid [data-agent-id]')]
+            .map(card => card.dataset.agentId)
+    );
+    const liveAgentIds = new Set(
+        (data.agents || []).map(agent => agent.agent_id)
+    );
+    const cardsChanged = renderedAgentIds.size !== liveAgentIds.size
+        || [...liveAgentIds].some(agentId => !renderedAgentIds.has(agentId));
+    if (cardsChanged) {
+        // The server renders the complete interactive card. This normally
+        // happens once at startup because the dashboard opens before all
+        // concurrent browser agents have finished registering.
+        window.location.reload();
+        return;
+    }
     const stats = data.global || {};
     const cards = document.querySelectorAll('#global-stats .stat-value');
     if (cards.length >= 5) {

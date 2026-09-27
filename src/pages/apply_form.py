@@ -784,18 +784,19 @@ class ApplyForm:
         for sel in button_selectors:
             try:
                 btn = self.page.locator(sel)
-                if await btn.count() > 0:
-                    # Make sure button is visible and enabled
-                    first_btn = btn.first
-                    if await first_btn.is_visible() and await first_btn.is_enabled():
-                        btn_text = await self._button_label(first_btn)
+                count = await btn.count()
+                for idx in range(count):
+                    candidate = btn.nth(idx)
+                    if await candidate.is_visible() and await candidate.is_enabled():
+                        btn_text = await self._button_label(candidate)
                         if not self._is_form_navigation_label(btn_text):
                             continue
                         logger.info(f"  → Clicking: '{btn_text}'")
                         previous_step = await self._current_step_fingerprint()
                         if re.search(r"\bsubmit\b", btn_text or "", re.IGNORECASE):
                             self._submit_attempted = True
-                        await first_btn.click()
+                        await candidate.scroll_into_view_if_needed()
+                        await candidate.click()
                         await self._wait_after_navigation_click(btn_text, previous_step)
                         return True
             except Exception:
@@ -814,17 +815,19 @@ class ApplyForm:
                 for sel in button_selectors:
                     try:
                         btn = frame.locator(sel)
-                        if await btn.count() > 0:
-                            first_btn = btn.first
-                            if await first_btn.is_visible() and await first_btn.is_enabled():
-                                btn_text = await self._button_label(first_btn)
+                        count = await btn.count()
+                        for idx in range(count):
+                            candidate = btn.nth(idx)
+                            if await candidate.is_visible() and await candidate.is_enabled():
+                                btn_text = await self._button_label(candidate)
                                 if not self._is_form_navigation_label(btn_text):
                                     continue
                                 logger.info(f"  â†’ Clicking: '{btn_text}'")
                                 previous_step = await self._current_step_fingerprint()
                                 if re.search(r"\bsubmit\b", btn_text or "", re.IGNORECASE):
                                     self._submit_attempted = True
-                                await first_btn.click()
+                                await candidate.scroll_into_view_if_needed()
+                                await candidate.click()
                                 await self._wait_after_navigation_click(btn_text, previous_step)
                                 return True
                     except Exception:
