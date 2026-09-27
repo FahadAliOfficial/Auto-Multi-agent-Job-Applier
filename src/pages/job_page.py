@@ -107,8 +107,13 @@ class JobPage:
         """
         self._expected_title = (expected_title or "").strip()
         try:
+            navigation_url = self._navigation_url(url)
             try:
-                await self.page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                await self.page.goto(
+                    navigation_url,
+                    wait_until="domcontentloaded",
+                    timeout=20000,
+                )
             except (PlaywrightTimeout, ExtensionBridgeError) as exc:
                 if isinstance(exc, ExtensionBridgeError) and "timed out" not in str(exc).lower():
                     raise
@@ -197,6 +202,32 @@ class JobPage:
         except Exception as e:
             logger.error(f"Failed to open job page: {e}")
             return False
+
+    def _navigation_url(self, requested_url: str) -> str:
+        """Leave Smart Apply via a direct job URL instead of a tracking redirect."""
+        try:
+            current = urlparse(str(getattr(self.page, "url", "")))
+            requested = urlparse(requested_url)
+            current_host = (current.hostname or "").lower()
+            requested_host = (requested.hostname or "").lower()
+            job_key = parse_qs(requested.query).get("jk", [""])[0]
+            on_smart_apply = current_host == "smartapply.indeed.com"
+            valid_indeed_host = (
+                requested_host == "indeed.com"
+                or requested_host.endswith(".indeed.com")
+            )
+            if on_smart_apply and valid_indeed_host and len(job_key) >= 8:
+                direct_url = (
+                    f"{requested.scheme or 'https'}://{requested.netloc}"
+                    f"/viewjob?jk={job_key}"
+                )
+                logger.info(
+                    "Leaving the completed application page via direct job navigation"
+                )
+                return direct_url
+        except Exception:
+            pass
+        return requested_url
 
     def mark_throttle_signal(self, reason: str = "captcha") -> None:
         """Record the strongest current anti-abuse pressure signal."""

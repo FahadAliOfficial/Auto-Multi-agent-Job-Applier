@@ -167,7 +167,7 @@ bot:
     # Supported: us, pk, uk, ca, au, in
     # us = indeed.com | pk = pk.indeed.com | uk = uk.indeed.com
     countries:
-      # - us
+      - us
       - pk
       - uk
       - ca

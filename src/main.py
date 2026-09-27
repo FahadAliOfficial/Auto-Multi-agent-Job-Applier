@@ -19,8 +19,22 @@ from rich.console import Console
 console = Console()
 
 
+def _configure_windows_utf8() -> None:
+    """Prevent Rich/emoji output from failing on legacy Windows code pages."""
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
 def main():
     """Parse CLI arguments and dispatch to the appropriate command."""
+    _configure_windows_utf8()
     parser = argparse.ArgumentParser(
         prog="indeed-bot",
         description="Indeed Easy Apply Bot — Automate your job applications",
